@@ -5,7 +5,7 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def initialize_seeds(seed_num: int):
-    torch.use_deterministic_algorithms(True)
+    torch.use_deterministic_algorithms(True, warn_only=True)
     random.seed(seed_num)
     np.random.seed(seed_num)
     torch.backends.cudnn.deterministic = True
@@ -17,3 +17,11 @@ def initialize_seeds(seed_num: int):
 
 def bool_type(x: str):
     return x != "0"
+
+def get_model_file_suffix(args, fold = None):
+    if args.model_name:
+        return args.model_name
+    return args.dataset + "_" + args.base_model.replace("/", "-") + (f"_{fold}" if fold else "")
+
+def get_checkpoint_path(model_name: str):
+    return f"saved_models/{model_name}"

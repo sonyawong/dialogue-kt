@@ -4,9 +4,11 @@ matplotlib==3.9.2
 openai==1.40.0
 pandas==1.5.3
 peft==0.12.0
+pykt-toolkit==0.0.38
 scikit-learn==1.5.1
 scipy==1.13.0
 sentencepiece==0.2.0
+sentence-transformers==3.1.0
 torch==2.3.0
 tqdm==4.66.5
 transformers==4.44.0

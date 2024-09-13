@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 from openai_api import OpenAIClient
-from data_loading import load_src_data, get_annotated_data_filename, load_annotated_data, load_atc
-from prompting import anno_base_system_prompt, anno_base_user_prompt, anno_atc_system_prompt, anno_atc_user_prompt, anno_correctness_system_prompt
+from data_loading import load_src_data, get_annotated_data_filename, get_kc_dict_filename, load_annotated_data, load_atc
+from prompting import anno_base_system_prompt, anno_base_user_prompt, anno_atc_system_prompt, anno_atc_user_prompt, anno_correctness_system_prompt, get_dialogue_text
 from kt_data_loading import apply_annotations
 
 def extract_result(annotation: str):
@@ -54,6 +54,17 @@ def combine_kcs_and_correctness(data: pd.DataFrame, kcs: List[dict], correctness
     print(f"Num failed: {num_failed} / {len(data)}")
     return annotations
 
+def create_kc_dict(df: pd.DataFrame):
+    kc_dict = {}
+    for _, sample in df.iterrows():
+        if "error" in sample["annotation"]:
+            continue
+        for turn in sample["annotation"].values():
+            for kc in turn["kcs"]:
+                if kc not in kc_dict:
+                    kc_dict[kc] = len(kc_dict)
+    return kc_dict
+
 def collect_base(args, split):
     data = load_src_data(args, split)
     if args.debug:
@@ -81,6 +92,7 @@ def collect_base(args, split):
     # Validate/process annotations and save to output file
     data["annotation"] = combine_kcs_and_correctness(data, kcs, correctness)
     data.to_csv(get_annotated_data_filename(args, split), index=False)
+    return data
 
 def get_atc_options(parent_ids: List[str], level: str, atc: dict):
     assert level in ("cluster", "standard")
@@ -164,13 +176,13 @@ def collect_atc(args, split: str):
     # Validate/process annotations and save to output file
     data["annotation"] = combine_kcs_and_correctness(data, standards, correctness, atc)
     data.to_csv(get_annotated_data_filename(args, split), index=False)
+    return data
 
 def collect(args, split: str = ""):
     assert args.openai_model
     if args.tag_src == "atc":
-        collect_atc(args, split)
-    else:
-        collect_base(args, split)
+        return collect_atc(args, split)
+    return collect_base(args, split)
 
 def analyze(args):
     train_df, val_df, test_df = load_annotated_data(args)
@@ -215,14 +227,30 @@ def analyze(args):
     print(f"Num KCs - Total: {len(all_kcs)}, Avg per Dialogue: {sum(per_dia_num_kcs) / len(data):.4f}, Avg per Turn: {np.mean(per_turn_num_kcs)}")
     print(f"Parsing Failed: {len(parse_failed)} / {len(data)} ({parse_failed})")
 
+def create_human_annotation_files(args):
+    train_df, val_df, test_df = load_annotated_data(args)
+    data = pd.concat([train_df, val_df, test_df])
+
+    # Tutor Question, Student Response, Predicted Correctness, Correctness Accuracy, Predicted Standards, Standards Rating
+
 def annotate(args):
-    if args.mode == "collect":
+    if args.mode == "llm-collect":
+        # Collect and save dialogue annotations
         if args.dataset == "mathdial":
             print("Annotating train split...")
-            collect(args, "train")
+            train_data = collect(args, "train")
             print("Annotating test split...")
-            collect(args, "test")
+            test_data = collect(args, "test")
+            data = pd.concat([train_data, test_data])
         else:
-            collect(args)
-    elif args.mode == "analyze":
+            data = collect(args)
+        # Save resulting KC dictionary
+        kc_dict = create_kc_dict(data)
+        with open(get_kc_dict_filename(args), "w") as file:
+            json.dump(kc_dict, file, indent=2, ensure_ascii=False)
+    elif args.mode == "llm-analyze":
         analyze(args)
+    elif args.mode == "human-create":
+        create_human_annotation_files(args)
+    elif args.mode == "human-analyze":
+        pass

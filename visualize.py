@@ -1,7 +1,7 @@
 import json
 import matplotlib.pyplot as plt
 
-from data_loading import get_kc_result_filename
+from data_loading import get_kc_result_filename, get_default_fold
 
 def visualize_single(kc_info):
     target_dialogue_idx = list(kc_info.keys())[3] # 3, tried up to 9
@@ -26,7 +26,7 @@ def visualize_average(kc_info):
     pass
 
 def visualize(args):
-    with open(get_kc_result_filename(args)) as kc_file:
+    with open(get_kc_result_filename(args, get_default_fold(args))) as kc_file:
         kc_info = json.load(kc_file)
 
     # visualize_single(kc_info)

@@ -1,9 +1,11 @@
+from typing import Dict, List
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+from sentence_transformers import SentenceTransformer
 
-from prompting import kt_system_prompt, kt_user_prompt_unpacked, kt_user_prompt_packed
+from prompting import kt_system_prompt, kt_user_prompt
 from utils import device
 
 def apply_annotations(sample: dict):
@@ -20,16 +22,17 @@ def apply_annotations(sample: dict):
         dia_turn["correct"] = anno_turn["correct"]
         dia_turn["kcs"] = anno_turn["kcs"]
     # Use human annotation of correctness for final turn
-    if "expected_result" in sample["meta_data"]: # CoMTA
-        dialogue[-1]["correct"] = sample["meta_data"]["expected_result"] == "Answer Accepted"
-    elif "self_correctness" in sample["meta_data"]: # MathDial
-        if dialogue[-1]["correct"] is not None: # Final turn could be closing remarks, so skip if not tagged as having correctness
-            if sample["meta_data"]["self_correctness"] == "Yes":
-                dialogue[-1]["correct"] = True
-            elif sample["meta_data"]["self_correctness"] == "Yes, but I had to reveal the answer":
-                dialogue[-1]["correct"] = None
-            elif sample["meta_data"]["self_correctness"] == "No":
-                dialogue[-1]["correct"] = False
+    if dialogue[-1]["kcs"]: # Skip if no KCs for final turn since correct must be None
+        if "expected_result" in sample["meta_data"]: # CoMTA
+            dialogue[-1]["correct"] = sample["meta_data"]["expected_result"] == "Answer Accepted"
+        elif "self_correctness" in sample["meta_data"]: # MathDial
+            if dialogue[-1]["correct"] is not None: # Final turn could be closing remarks, so skip if not tagged as having correctness
+                if sample["meta_data"]["self_correctness"] == "Yes":
+                    dialogue[-1]["correct"] = True
+                elif sample["meta_data"]["self_correctness"] == "Yes, but I had to reveal the answer":
+                    dialogue[-1]["correct"] = None
+                elif sample["meta_data"]["self_correctness"] == "No":
+                    dialogue[-1]["correct"] = False
     return dialogue
 
 class DatasetBase(Dataset):
@@ -39,8 +42,8 @@ class DatasetBase(Dataset):
     def __len__(self):
         return len(self.data)
 
-class KTDatasetUnpacked(DatasetBase):
-    def __init__(self, data: pd.DataFrame, tokenizer, args):
+class LMKTDatasetUnpacked(DatasetBase):
+    def __init__(self, data: pd.DataFrame, tokenizer, args, skip_first_turn: bool = False):
         self.data = []
         failed = 0
         for idx, sample in data.iterrows():
@@ -48,15 +51,20 @@ class KTDatasetUnpacked(DatasetBase):
             if not dialogue:
                 failed += 1
                 continue
-            for turn_idx, turn in enumerate(dialogue):
+            is_first_turn = True
+            for turn in dialogue:
                 if turn["correct"] is None:
+                    continue
+                # Skip first tagged turn at test time for fairness with baselines
+                if skip_first_turn and is_first_turn:
+                    is_first_turn = False
                     continue
                 self.data.append({
                     "dialogue_idx": idx,
                     "prompts": [
                         tokenizer.apply_chat_template([
                             {"role": "system", "content": kt_system_prompt(args)},
-                            {"role": "user", "content": kt_user_prompt_unpacked(sample, turn_idx, kc, args)},
+                            {"role": "user", "content": kt_user_prompt(sample, dialogue, turn["turn"], kc, args)},
                             {"role": "assistant", "content": f"\n"} # Newline would precede True or False prediction
                         ], tokenize=False)
                         for kc in turn["kcs"]
@@ -67,7 +75,7 @@ class KTDatasetUnpacked(DatasetBase):
         print(f"{failed} / {len(data)} dialogues failed processing")
         print(f"Number of data points: {len(self.data)}")
 
-class KTCollatorUnpacked:
+class LMKTCollatorUnpacked:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
@@ -83,8 +91,8 @@ class KTCollatorUnpacked:
             "meta_data": batch
         }
 
-class KTDatasetPacked(DatasetBase):
-    def __init__(self, data: pd.DataFrame, tokenizer, args):
+class LMKTDatasetPacked(DatasetBase):
+    def __init__(self, data: pd.DataFrame, tokenizer, args, skip_first_turn: bool = False):
         self.data = []
         failed = 0
         for idx, sample in data.iterrows():
@@ -92,12 +100,18 @@ class KTDatasetPacked(DatasetBase):
             if not dialogue:
                 failed += 1
                 continue
-            for turn_idx, turn in enumerate(dialogue):
+            is_first_turn = True
+            for turn in dialogue:
                 if turn["correct"] is None:
                     continue
+                # Skip first tagged turn at test time for fairness with baselines
+                if skip_first_turn and is_first_turn:
+                    is_first_turn = False
+                    continue
+                # Create base prompt followed by all possible continuations
                 prompt = tokenizer.apply_chat_template([
                     {"role": "system", "content": kt_system_prompt(args)},
-                    {"role": "user", "content": kt_user_prompt_packed(sample, turn_idx, args)},
+                    {"role": "user", "content": kt_user_prompt(sample, dialogue, turn["turn"], None, args)},
                 ], tokenize=False)
                 kc_conts = [
                     tokenizer.apply_chat_template([
@@ -117,7 +131,7 @@ class KTDatasetPacked(DatasetBase):
         print(f"{failed} / {len(data)} dialogues failed processing")
         print(f"Number of data points: {len(self.data)}")
 
-class KTCollatorPacked:
+class LMKTCollatorPacked:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
@@ -158,13 +172,121 @@ class KTCollatorPacked:
         last_idxs = pad_sequence([idxs[3::2] - 1 for idxs in eos_idxs], batch_first=True)
         return {
             "input_ids": input_ids,
-            "attention_mask": attention_mask.unsqueeze(1), # Add singleton head dimension
-            "position_ids": position_ids,
+            "attention_mask": attention_mask.unsqueeze(1).to(device), # Add singleton head dimension
+            "position_ids": position_ids.to(device),
             "last_idxs": last_idxs,
             "num_kcs": [len(sample["kcs"]) for sample in batch],
             "labels": torch.Tensor([sample["label"] for sample in batch]).to(device),
             "meta_data": batch
         }
+
+class DKTDataset(DatasetBase):
+    def __init__(self, data: pd.DataFrame, kc_dict: Dict[str, int], kc_emb_matrix: torch.Tensor, sbert_model: SentenceTransformer):
+        self.data = []
+        failed = 0
+        num_data_points = 0
+        num_correct = 0
+        for _, sample in data.iterrows():
+            dialogue = apply_annotations(sample)
+            if not dialogue:
+                failed += 1
+                continue
+            dialogue_data = {
+                "labels": [], "labels_flat": [], "kc_ids": [], "kc_ids_flat": [], "turn_end_idxs": [],
+                "kc_embs": [], "teacher_turns": [], "student_turns": [], "dialogue": dialogue
+            }
+            for turn in dialogue:
+                if turn["correct"] is None:
+                    continue
+                dialogue_data["labels"].append(turn["correct"])
+                dialogue_data["kc_ids"].append([kc_dict[kc] for kc in turn["kcs"]])
+                for kc in turn["kcs"]:
+                    dialogue_data["labels_flat"].append(turn["correct"])
+                    dialogue_data["kc_ids_flat"].append(kc_dict[kc])
+                dialogue_data["turn_end_idxs"].append(len(dialogue_data["kc_ids_flat"]) - 1)
+                dialogue_data["teacher_turns"].append(turn["teacher"])
+                dialogue_data["student_turns"].append(turn["student"])
+                if kc_emb_matrix is not None:
+                    dialogue_data["kc_embs"].append(
+                        kc_emb_matrix[dialogue_data["kc_ids"][-1]].mean(dim=0)
+                    )
+            # Add dialogue if at least 2 turns tagged, otherwise nothing to predict
+            if len(dialogue_data["labels"]) > 1:
+                self.data.append(dialogue_data)
+                num_data_points += len(dialogue_data["labels"])
+                num_correct += sum(dialogue_data["labels"])
+        # Batch encode all dialogue text
+        if sbert_model is not None:
+            seqs = [turn for dialogue in self.data for turn in dialogue["teacher_turns"]] + [
+                    turn for dialogue in self.data for turn in dialogue["student_turns"]]
+            batch_size = 512
+            result_embs = []
+            for batch_start_idx in range(0, len(seqs), batch_size):
+                batch = seqs[batch_start_idx : batch_start_idx + batch_size]
+                result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
+            result_embs = torch.concat(result_embs, dim=0)
+            turn_counter = 0
+            for dialogue in self.data:
+                seq_len = len(dialogue["labels"])
+                dialogue["teacher_embs"] = result_embs[turn_counter : turn_counter + seq_len]
+                stud_start = result_embs.shape[0] // 2
+                dialogue["student_embs"] = result_embs[stud_start + turn_counter : stud_start + turn_counter + seq_len]
+                turn_counter += seq_len
+        self.majority_class = 1 if num_correct / num_data_points >= .5 else 0
+        print(f"{failed} / {len(data)} dialogues failed processing")
+        print(f"Number of data points: {num_data_points}, {num_correct} correct")
+
+class DKTCollator:
+    def __init__(self, flatten_kcs: bool):
+        self.flatten_kcs = flatten_kcs
+
+    def __call__(self, batch):
+        labels = pad_sequence(
+            [torch.LongTensor(seq["labels"]) for seq in batch],
+            batch_first=True, padding_value=-100 # Pad with -100 to ignore loss on padding regions
+        )
+        # # Fill in KC ids, 2D matrix (length x max num KCs) per sequence
+        num_kcs = pad_sequence(
+            [torch.LongTensor([len(kc_ids) for kc_ids in seq["kc_ids"]]) for seq in batch],
+            batch_first=True, padding_value=1 # Pad with 1 to avoid division by 0
+        )
+        max_num_kcs = num_kcs.max()
+        kc_ids = torch.zeros((*num_kcs.shape, max_num_kcs), dtype=torch.long)
+        for seq_idx, seq in enumerate(batch):
+            for turn_idx, turn_kc_ids in enumerate(seq["kc_ids"]):
+                kc_ids[seq_idx, turn_idx, :len(turn_kc_ids)] = torch.LongTensor(turn_kc_ids)
+
+        result = {
+            "labels": labels.to(device),
+            "kc_ids": kc_ids.to(device),
+            "num_kcs": num_kcs.to(device)
+        }
+
+        if self.flatten_kcs:
+            # Add flattened versions of KC ids and labels for unrolled model input
+            kc_ids_flat = pad_sequence([torch.LongTensor(seq["kc_ids_flat"]) for seq in batch], batch_first=True)
+            labels_flat = pad_sequence([torch.LongTensor(seq["labels_flat"]) for seq in batch], batch_first=True)
+            turn_end_idxs = pad_sequence([torch.LongTensor(seq["turn_end_idxs"]) for seq in batch], batch_first=True)
+            result = {
+                **result,
+                "labels_flat": labels_flat.to(device),
+                "kc_ids_flat": kc_ids_flat.to(device),
+                "turn_end_idxs": turn_end_idxs.to(device)
+            }
+
+        if batch[0]["kc_embs"]:
+            # Add text embeddings
+            kc_embs = pad_sequence([torch.stack(seq["kc_embs"]) for seq in batch], batch_first=True)
+            teacher_embs = pad_sequence([seq["teacher_embs"] for seq in batch], batch_first=True)
+            student_embs = pad_sequence([seq["student_embs"] for seq in batch], batch_first=True)
+            result = {
+                **result,
+                "kc_embs": kc_embs,
+                "teacher_embs": teacher_embs,
+                "student_embs": student_embs
+            }
+
+        return result
 
 def get_dataloader(dataset: Dataset, collator, batch_size: int, shuffle: bool):
     return DataLoader(dataset, collate_fn=collator, batch_size=batch_size, shuffle=shuffle)

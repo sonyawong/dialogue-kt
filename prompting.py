@@ -1,20 +1,27 @@
-from typing import List
+from typing import List, Optional
 from transformers import AutoTokenizer
 
 # ===== General functions =====
 
-def get_dialogue_text(sample: dict, turn_idx: int = None):
-    prompt = "[BEGIN DIALOGUE]"
-    for turn in sample["dialogue"]:
+def get_dialogue_text(dialogue: List[dict], turn_idx: int = None, include_labels: bool = False, tag_wrapper: bool = True):
+    lines = []
+    for turn in dialogue:
         if turn["teacher"]:
-            prompt += f"\nTeacher Turn {turn['turn']}: {turn['teacher']}"
+            lines.append(f"Teacher Turn {turn['turn']}: {turn['teacher']}")
         # When turn_idx is given, stop after teacher utterance for that turn
         # Student utterance not included since would leak the correctness label in KT objective
         if turn_idx is not None and turn_idx == turn["turn"]:
             break
         if turn["student"]:
-            prompt += f"\nStudent Turn {turn['turn']}: {turn['student']}"
-    prompt += "\n[END DIALOGUE]"
+            lines.append(f"Student Turn {turn['turn']}: {turn['student']}")
+        if include_labels:
+            correct_str = "NA" if turn["correct"] is None else str(turn["correct"])
+            lines.append(f"Student Turn {turn['turn']} Correct: {correct_str}")
+            kcs_str = "None" if not turn["kcs"] else " ".join([f"{idx + 1}) {kc}" for idx, kc in enumerate(turn["kcs"])])
+            lines.append(f"Turn {turn['turn']} Knowledge Components: {kcs_str}")
+    prompt = "\n".join(lines)
+    if tag_wrapper:
+        prompt = "[BEGIN DIALOGUE]\n" + prompt + "\n[END DIALOGUE]"
     return prompt
 
 def get_mathdial_context(sample: dict):
@@ -70,28 +77,6 @@ ANNO_ATC_STANDARD_SYSTEM_PROMPT = """You are an experienced math teacher and edu
 - Along with each summary, list ALL candidate standards that can be used to describe each turn in the dialogue. If there are multiple standards with the same description but different IDs and they both apply, then list both IDs.
 - Your final response should be a JSON object using the template: result = {{"turn 1": ["standard 1 id", "standard 2 id", ...], "turn 2": ...}}"""
 
-# def anno_atc_comta_system_prompt(level: str):
-#     if level == "domain":
-#         return """You are an experienced math teacher and education expert. You are given a dialogue between a student and teacher where the student is learning about math concepts. Your job is to list the common core domains that can be used to classify the learning objectives in this dialogue. Please follow these instructions carefully when making your prediction:
-# - You will be given a list of common core domains to choose from. When choosing them, write their names exactly as they appear. Do not use any domains that are not in this list.
-# - Before giving your final response, write a short summary of the dialogue.
-# - Your final response should be a list using the template: result = ["domain 1 name", "domain 2 name", ...]"""
-#     elif level == "cluster":
-#         return """You are an experienced math teacher and education expert. You are given a dialogue between a student and teacher where the student is learning about math concepts. Your job is to list the common core math concepts/skills that can be used to classify the learning objectives in this dialogue. Please follow these instructions carefully when making your prediction:
-# - You will be given a list of common core math concepts/skills to choose from. When choosing them, write their IDs exactly as they appear. Do not use any math concepts/skills that are not in this list.
-# - Teacher turns are often phrased as questions. In these cases, choose math concepts/skills that the student will need in order to respond correctly to the teacher's question.
-# - Before giving your final response, write a short summary of each turn in the dialogue, including the intended learning objectives.
-# - Along with each summary, list ALL candidate math concepts/skills that can be used to describe each turn in the dialogue. If there are multiple math concepts/skills with the same description but different IDs and they both apply, then list both IDs.
-# - Your final response should be a list using the template: result = ["math concept/skill 1 id", "math concept/skill 2 id", ...]"""
-#     else:
-#         return """You are an experienced math teacher and education expert. You are given a dialogue between a student and teacher where the student is learning about math concepts. Your job is to list the common core standards that can be used to classify the learning objectives at each turn in this dialogue. Please follow these instructions carefully when making your prediction:
-# - You will be given a list of common core standards to choose from. When choosing them, write their IDs exactly as they appear. Do not use any standards that are not in this list.
-# - Teacher turns are often phrased as questions. In these cases, choose standards that the student will need in order to respond correctly to the teacher's question.
-# - Do not give any standards for turn 0 since there is no question being asked by the teacher.
-# - Before giving your final response, write a short summary of each turn in the dialogue, including the intended learning objectives.
-# - Along with each summary, list ALL candidate standards that can be used to describe each turn in the dialogue. If there are multiple standards with the same description but different IDs and they both apply, then list both IDs.
-# - Your final response should be a JSON object using the template: result = {"turn 1": ["standard 1 id", "standard 2 id", ...], "turn 2": ...}"""
-
 def get_dataset_desc(args):
     if args.dataset == "comta":
         return COMTA_DIALOGUE_DESC
@@ -106,7 +91,7 @@ def anno_base_user_prompt(sample: dict, args):
     prompt = ""
     if args.dataset == "mathdial":
         prompt += get_mathdial_context(sample) + "\n\n"
-    prompt += get_dialogue_text(sample)
+    prompt += get_dialogue_text(sample["dialogue"])
     max_turn = sample["dialogue"][-1]["turn"]
     prompt += f"\n\nYour final response should have an entry for exactly {max_turn} turn{f's (1-{max_turn})' if max_turn > 1 else ''}."
     return prompt
@@ -124,7 +109,7 @@ def anno_atc_user_prompt(sample: dict, level: str, options: List[str], args):
     prompt = ""
     if args.dataset == "mathdial":
         prompt += get_mathdial_context(sample) + "\n\n"
-    prompt += get_dialogue_text(sample)
+    prompt += get_dialogue_text(sample["dialogue"])
     desc = "DOMAINS" if level == "domain" else "MATH CONCEPTS/SKILLS" if level == "cluster" else "STANDARDS"
     prompt += f"\n\n[BEGIN {desc}]\n- " + "\n- ".join(options) + f"\n[END {desc}]"
     if level == "standard":
@@ -146,18 +131,12 @@ KT_SYSTEM_PROMPT = """You are an experienced math teacher. You are given a dialo
 def kt_system_prompt(args):
     return KT_SYSTEM_PROMPT.format(desc=get_dataset_desc(args))
 
-def kt_user_prompt_unpacked(sample: dict, turn_idx: int, kc: str, args):
+def kt_user_prompt(sample: dict, dialogue_anno: List[dict], turn_idx: int, kc: Optional[str], args):
     prompt = ""
     if args.dataset == "mathdial":
         prompt += get_mathdial_context(sample) + "\n\n"
-    prompt += get_dialogue_text(sample, turn_idx)
-    prompt += f"\n\nKnowledge Component: {kc}"
-    return prompt
-
-def kt_user_prompt_packed(sample: dict, turn_idx: int, args):
-    prompt = ""
-    if args.dataset == "mathdial":
-        prompt += get_mathdial_context(sample) + "\n\n"
-    prompt += get_dialogue_text(sample, turn_idx)
+    prompt += get_dialogue_text(dialogue_anno, turn_idx=turn_idx, include_labels=args.prompt_inc_labels)
     prompt += f"\n\nKnowledge Component:"
+    if kc:
+        prompt += " " + kc
     return prompt

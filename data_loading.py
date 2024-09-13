@@ -1,8 +1,12 @@
-from typing import List
+from typing import List, Union
 import json
 import re
 from ast import literal_eval
 import pandas as pd
+
+from utils import get_model_file_suffix
+
+COMTA_SUBJECTS = ["Elementary", "Algebra", "Trigonometry", "Geometry"]
 
 def add_content(cur: str, new: str):
     new = new.strip()
@@ -64,9 +68,7 @@ def load_mathdial_src_data(split: str):
         data = [json.loads(line) for line in file]
     proc_data = []
     for sample in data:
-        # Skip dialogues that are rated as not being typical of student behavior
-        if (not sample["self-typical-confusion"] or not sample["self-typical-interactions"]
-            or sample["self-typical-confusion"] < 4 or sample["self-typical-interactions"] < 4):
+        if not sample["self-typical-confusion"] or not sample["self-typical-interactions"]:
             continue
         # Add dialogue and meta data
         proc_data.append({
@@ -78,7 +80,9 @@ def load_mathdial_src_data(split: str):
                 "question": sample["question"],
                 "correct_solution": sample["ground_truth"],
                 "incorrect_solution": sample["student_incorrect_solution"],
-                "self_correctness": sample["self-correctness"]
+                "self_correctness": sample["self-correctness"],
+                "self_typical_confusion": sample["self-typical-confusion"],
+                "self_typical_interactions": sample["self-typical-interactions"]
             }
         })
     return pd.DataFrame(proc_data)
@@ -93,21 +97,54 @@ def load_src_data(args, split: str = ""):
 def get_annotated_data_filename(args, split: str = ""):
     return f"data/annotated/{args.dataset}{f'_{split}' if split else ''}_{args.tag_src}.csv"
 
-def load_annotated_data(args, fold: int = 0):
+def get_kc_dict_filename(args):
+    return f"data/annotated/kc_dict_{args.dataset}_{args.tag_src}.json"
+
+def load_kc_dict(args):
+    with open(get_kc_dict_filename(args)) as file:
+        return json.load(file)
+
+def get_default_fold(args):
+    if args.dataset == "comta":
+        if args.split_by_subject:
+            return "Elementary"
+        return 1
+    else:
+        return None
+
+def load_annotated_data(args, fold: Union[int, str, None] = 1):
     if args.dataset == "comta":
         df = pd.read_csv(get_annotated_data_filename(args), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
-        df = df.sample(frac=1, random_state=221)
-        split_point = int(len(df) * (fold / 5))
-        df = pd.concat([df[split_point:], df[:split_point]])
-        return (
-            df[:int(len(df) * .65)],
-            df[int(len(df) * .65) : int(len(df) * .8)],
-            df[int(len(df) * .8):],
-        )
+        if args.split_by_subject:
+            assert fold in COMTA_SUBJECTS
+            subj_mask = df.apply(lambda row: row["meta_data"]["math_level"] == fold, axis=1)
+            test_df = df[subj_mask]
+            train_df = df[~subj_mask].sample(frac=1, random_state=221)
+            return (
+                train_df[:int(.8 * len(train_df))],
+                train_df[int(.8 * len(train_df)):],
+                test_df
+            )
+        else:
+            assert fold in range(1, 6)
+            df = df.sample(frac=1, random_state=221)
+            split_point = int(len(df) * ((fold - 1) / 5))
+            df = pd.concat([df[split_point:], df[:split_point]])
+            return (
+                df[:int(len(df) * .65)],
+                df[int(len(df) * .65) : int(len(df) * .8)],
+                df[int(len(df) * .8):],
+            )
     elif args.dataset == "mathdial":
+        def pass_typical_threshold(row):
+            return (row["meta_data"]["self_typical_confusion"] >= args.typical_cutoff and
+                    row["meta_data"]["self_typical_interactions"] >= args.typical_cutoff)
+
         train_df = pd.read_csv(get_annotated_data_filename(args, "train"), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
         train_df = train_df.sample(frac=1, random_state=221)
+        train_df = train_df[train_df.apply(pass_typical_threshold, axis=1)]
         test_df = pd.read_csv(get_annotated_data_filename(args, "test"), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
+        test_df = test_df[test_df.apply(pass_typical_threshold, axis=1)]
         return (
             train_df[:int(.8 * len(train_df))],
             train_df[int(.8 * len(train_df)):],
@@ -115,9 +152,8 @@ def load_annotated_data(args, fold: int = 0):
         )
     raise Exception(f"Loading not supported for {args.dataset}")
 
-def get_kc_result_filename(args):
-    model_name = args.model_name or args.base_model.replace("/", "-")
-    return f"results/kcs_{args.dataset}_{model_name}.json"
+def get_kc_result_filename(args, fold):
+    return f"results/kcs_{get_model_file_suffix(args, fold)}.json"
 
 def load_atc():
     with open("data/src/ATC/domain_groups.json") as file:
