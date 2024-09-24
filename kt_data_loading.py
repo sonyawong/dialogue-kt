@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 from prompting import kt_system_prompt, kt_user_prompt
 from utils import device
 
-def apply_annotations(sample: dict):
+def apply_annotations(sample: dict, apply_na: bool = True):
     dialogue = sample["dialogue"]
     anno = sample["annotation"]
     if "error" in anno:
@@ -19,8 +19,13 @@ def apply_annotations(sample: dict):
     # Copy correctness and kcs into dialogue
     for dia_turn in dialogue:
         anno_turn = anno[f"turn {dia_turn['turn']}"]
-        dia_turn["correct"] = anno_turn["correct"]
-        dia_turn["kcs"] = anno_turn["kcs"]
+        corr = anno_turn["correct"]
+        kcs = anno_turn["kcs"]
+        if apply_na:
+            corr = None if not kcs else corr
+            kcs = [] if corr is None else kcs
+        dia_turn["correct"] = dia_turn["og_correct"] = corr
+        dia_turn["kcs"] = kcs
     # Use human annotation of correctness for final turn
     if dialogue[-1]["kcs"]: # Skip if no KCs for final turn since correct must be None
         if "expected_result" in sample["meta_data"]: # CoMTA
@@ -186,14 +191,14 @@ class DKTDataset(DatasetBase):
         failed = 0
         num_data_points = 0
         num_correct = 0
-        for _, sample in data.iterrows():
+        for idx, sample in data.iterrows():
             dialogue = apply_annotations(sample)
             if not dialogue:
                 failed += 1
                 continue
             dialogue_data = {
                 "labels": [], "labels_flat": [], "kc_ids": [], "kc_ids_flat": [], "turn_end_idxs": [],
-                "kc_embs": [], "teacher_turns": [], "student_turns": [], "dialogue": dialogue
+                "kc_embs": [], "teacher_turns": [], "student_turns": [], "dialogue": dialogue, "dialogue_idx": idx
             }
             for turn in dialogue:
                 if turn["correct"] is None:
@@ -234,7 +239,7 @@ class DKTDataset(DatasetBase):
                 turn_counter += seq_len
         self.majority_class = 1 if num_correct / num_data_points >= .5 else 0
         print(f"{failed} / {len(data)} dialogues failed processing")
-        print(f"Number of data points: {num_data_points}, {num_correct} correct")
+        print(f"Num dialogues: {len(self.data)}, num data points: {num_data_points}, {num_correct} correct")
 
 class DKTCollator:
     def __init__(self, flatten_kcs: bool):

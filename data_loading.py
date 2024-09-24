@@ -36,10 +36,19 @@ def process_dialogue(turns: List[dict]):
             }
         cur_role = turn["role"]
         cur_turn[cur_role] = add_content(cur_turn[cur_role], turn["content"])
-    # Only include final turn if there was a student response
+    # Only include final turn if there was a student response (not always the case in MathDial)
     if cur_turn["student"]:
         result.append(cur_turn)
     return result
+
+def correct_from_str(correct: str):
+    return True if correct == "true" else False if correct == "false" else None
+
+def correct_to_str(correct: Union[bool, None]):
+    return "na" if correct is None else "true" if correct else False
+
+def standards_to_str(standards: List[str], sep: str):
+    return "None" if not standards else sep.join([f"{idx + 1}) {kc}" for idx, kc in enumerate(standards)])
 
 def load_comta_src_data():
     with open("data/src/CoMTA_dataset.json") as file:
@@ -152,8 +161,20 @@ def load_annotated_data(args, fold: Union[int, str, None] = 1):
         )
     raise Exception(f"Loading not supported for {args.dataset}")
 
+def get_model_file_suffix(args, fold = None):
+    suffix = "_incfirst" if args.inc_first_label else ""
+    suffix += f"_{fold}" if fold else ""
+    if args.model_type in ("random", "majority", "bkt"):
+        return args.dataset + "_" + args.model_type + suffix
+    if args.model_name:
+        return args.model_name + suffix
+    return args.dataset + "_" + args.base_model.replace("/", "-") + suffix
+
 def get_kc_result_filename(args, fold):
     return f"results/kcs_{get_model_file_suffix(args, fold)}.json"
+
+def get_qual_result_filename(args, fold = None):
+    return f"results/qual_{get_model_file_suffix(args, fold)}.csv"
 
 def load_atc():
     with open("data/src/ATC/domain_groups.json") as file:

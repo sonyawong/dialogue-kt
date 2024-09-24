@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 from openai_api import OpenAIClient
-from data_loading import load_src_data, get_annotated_data_filename, get_kc_dict_filename, load_annotated_data, load_atc
-from prompting import anno_base_system_prompt, anno_base_user_prompt, anno_atc_system_prompt, anno_atc_user_prompt, anno_correctness_system_prompt, get_dialogue_text
+from data_loading import load_src_data, get_annotated_data_filename, get_kc_dict_filename, load_annotated_data, load_atc, correct_from_str
+from prompting import anno_base_system_prompt, anno_base_user_prompt, anno_atc_system_prompt, anno_atc_user_prompt, anno_correctness_system_prompt
 from kt_data_loading import apply_annotations
 
 def extract_result(annotation: str):
@@ -41,15 +41,11 @@ def combine_kcs_and_correctness(data: pd.DataFrame, kcs: List[dict], correctness
                 key = f"turn {idx + 1}"
                 turn_kcs = dia_kcs[key]
                 turn_corr = dia_corrs[key]
-                # Convert correctness string to True/False/None, override to None if no KCs for that turn
-                turn_corr = None if turn_corr == "na" or not turn_kcs else True if turn_corr == "true" else False
-                # Override KCs with empty list if correctness is None
-                turn_kcs = [] if turn_corr is None else turn_kcs
                 # If doing ATC tagging, convert IDs to strings
                 if atc is not None:
                     turn_kcs = [atc["standards"][tag_id]["description"] for tag_id in turn_kcs]
                 # Save current turn
-                dia_anno[key] = {"correct": turn_corr, "kcs": turn_kcs}
+                dia_anno[key] = {"correct": correct_from_str(turn_corr), "kcs": turn_kcs}
             annotations.append(dia_anno)
     print(f"Num failed: {num_failed} / {len(data)}")
     return annotations
@@ -77,6 +73,7 @@ def collect_base(args, split):
     results = client.get_batched_responses(prompts, args.openai_model, 4000, 10, 0,
                                            system_message=anno_base_system_prompt(args), show_progress=True)
     kcs = [extract_result(result) for result in results]
+    data["kc_prompt"] = prompts
     data["kc_annotation_raw"] = results
     data["kc_annotation"] = kcs
 
@@ -86,6 +83,7 @@ def collect_base(args, split):
     results = client.get_batched_responses(prompts, args.openai_model, 4000, 10, 0,
                                            system_message=anno_correctness_system_prompt(args), show_progress=True)
     correctness = [extract_result(res) for res in results]
+    data["correctness_prompt"] = prompts
     data["correctness_annotation_raw"] = results
     data["correctness_annotation"] = correctness
 
@@ -129,6 +127,7 @@ def collect_atc(args, split: str):
     results = client.get_batched_responses(prompts, args.openai_model, 4000, 10, 0,
                                            system_message=anno_atc_system_prompt("domain", args), show_progress=True)
     domains = [extract_result(res) for res in results]
+    data["domain_prompt"] = prompts
     data["domain_annotation_raw"] = results
     data["domain_annotation"] = domains
 
@@ -145,6 +144,7 @@ def collect_atc(args, split: str):
     for idx, val_idx in enumerate(valid_idxs):
         results_inc_none[val_idx] = results[idx]
         clusters[val_idx] = extract_result(results[idx])
+    data["cluster_prompt"] = prompts
     data["cluster_annotation_raw"] = results_inc_none
     data["cluster_annotation"] = clusters
 
@@ -161,6 +161,7 @@ def collect_atc(args, split: str):
     for idx, val_idx in enumerate(valid_idxs):
         results_inc_none[val_idx] = results[idx]
         standards[val_idx] = extract_result(results[idx])
+    data["standard_prompt"] = prompts
     data["standard_annotation_raw"] = results_inc_none
     data["standard_annotation"] = standards
 
@@ -170,6 +171,7 @@ def collect_atc(args, split: str):
     results = client.get_batched_responses(prompts, args.openai_model, 4000, 10, 0,
                                            system_message=anno_correctness_system_prompt(args), show_progress=True)
     correctness = [extract_result(res) for res in results]
+    data["correctness_prompt"] = prompts
     data["correctness_annotation_raw"] = results
     data["correctness_annotation"] = correctness
 
@@ -193,48 +195,49 @@ def analyze(args):
     final_correct_match: List[bool] = []
     per_dia_num_kcs: List[int] = []
     per_turn_num_kcs: List[int] = []
+    corr_turn_num_kcs: List[int] = []
+    incorr_turn_num_kcs: List[int] = []
     all_kcs: Set[str] = set()
     parse_failed: List[int] = []
     subject_to_count: Dict[str, int] = {}
     for idx, sample in data.iterrows():
         dialogue = sample["dialogue"]
-        anno = sample["annotation"]
         dialogue_anno = apply_annotations(sample)
-        if "error" in anno:
+        if not dialogue_anno:
             parse_failed.append(idx)
             continue
-        anno = list(anno.values())
-        num_turns.append(dialogue[-1]["turn"])
-        num_correct.append(len([0 for turn in anno if turn["correct"]]))
-        num_na.append(len([0 for turn in anno if turn["correct"] is None]))
-        final_correct_match.append(anno[-1]["correct"] == dialogue_anno[-1]["correct"])
-        kc_set = {kc for turn in anno for kc in turn["kcs"]}
+        num_turns.append(len(dialogue))
+        num_correct.append(len([0 for turn in dialogue_anno if turn["correct"]]))
+        num_na.append(len([0 for turn in dialogue_anno if turn["correct"] is None]))
+        final_correct_match.append(dialogue_anno[-1]["og_correct"] == dialogue_anno[-1]["correct"])
+        kc_set = {kc for turn in dialogue_anno for kc in turn["kcs"]}
         per_dia_num_kcs.append(len(kc_set))
-        per_turn_num_kcs.extend([len(turn["kcs"]) for turn in anno if turn["kcs"]])
+        per_turn_num_kcs.extend([len(turn["kcs"]) for turn in dialogue_anno if turn["kcs"]])
+        corr_turn_num_kcs.extend([len(turn["kcs"]) for turn in dialogue_anno if turn["correct"]])
+        incorr_turn_num_kcs.extend([len(turn["kcs"]) for turn in dialogue_anno if turn["correct"] is False])
         all_kcs = all_kcs.union(kc_set)
         if args.dataset == "comta":
             subject_to_count.setdefault(sample["meta_data"]["math_level"], 0)
             subject_to_count[sample["meta_data"]["math_level"]] += 1
     total_num_turns = sum(num_turns)
     # print("All KCs:\n" + "\n".join(sorted(all_kcs)))
+    total_dialogues = len(data) - len(parse_failed)
     if subject_to_count:
         print("Subject Counts - " + ", ".join([f"{subject}: {count}" for subject, count in subject_to_count.items()]))
-    print(f"Turns - Total: {total_num_turns}, Avg: {total_num_turns / len(data):.4f}")
+    print(f"Turns - Total: {total_num_turns}, Avg: {total_num_turns / total_dialogues:.4f}, w/ Correctness: {total_num_turns - sum(num_na)}")
     print(f"Correct - True: {sum(num_correct) / total_num_turns:.4f}, "
           f"False: {(total_num_turns - sum(num_correct) - sum(num_na)) / total_num_turns:.4f}, "
           f"NA: {sum(num_na) / total_num_turns:.4f}")
-    print(f"Final Correct Match: {sum(final_correct_match) / len(data):.4f}")
-    print(f"Num KCs - Total: {len(all_kcs)}, Avg per Dialogue: {sum(per_dia_num_kcs) / len(data):.4f}, Avg per Turn: {np.mean(per_turn_num_kcs)}")
+    print(f"Correct (Normalized) - True: {sum(num_correct) / (total_num_turns - sum(num_na)):.4f}, "
+          f"False: {(total_num_turns - sum(num_correct) - sum(num_na)) / (total_num_turns - sum(num_na)):.4f}")
+    print(f"Final Correct Match: {sum(final_correct_match) / total_dialogues:.4f}")
+    print(f"Num KCs - Total: {len(all_kcs)}, Avg per Dialogue: {sum(per_dia_num_kcs) / total_dialogues:.4f}, Avg per Turn: {np.mean(per_turn_num_kcs):.4f}")
+    print(f"Turns with >1 KC: {sum([kcs > 1 for kcs in per_turn_num_kcs]) / len(per_turn_num_kcs):.4f}")
+    print(f"Avg. KCs on correct turns: {np.mean(corr_turn_num_kcs):.4f}, on incorrect turns: {np.mean(incorr_turn_num_kcs):.4f}")
     print(f"Parsing Failed: {len(parse_failed)} / {len(data)} ({parse_failed})")
 
-def create_human_annotation_files(args):
-    train_df, val_df, test_df = load_annotated_data(args)
-    data = pd.concat([train_df, val_df, test_df])
-
-    # Tutor Question, Student Response, Predicted Correctness, Correctness Accuracy, Predicted Standards, Standards Rating
-
 def annotate(args):
-    if args.mode == "llm-collect":
+    if args.mode == "collect":
         # Collect and save dialogue annotations
         if args.dataset == "mathdial":
             print("Annotating train split...")
@@ -248,9 +251,5 @@ def annotate(args):
         kc_dict = create_kc_dict(data)
         with open(get_kc_dict_filename(args), "w") as file:
             json.dump(kc_dict, file, indent=2, ensure_ascii=False)
-    elif args.mode == "llm-analyze":
+    elif args.mode == "analyze":
         analyze(args)
-    elif args.mode == "human-create":
-        create_human_annotation_files(args)
-    elif args.mode == "human-analyze":
-        pass

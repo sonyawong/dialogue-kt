@@ -18,10 +18,5 @@ def initialize_seeds(seed_num: int):
 def bool_type(x: str):
     return x != "0"
 
-def get_model_file_suffix(args, fold = None):
-    if args.model_name:
-        return args.model_name
-    return args.dataset + "_" + args.base_model.replace("/", "-") + (f"_{fold}" if fold else "")
-
 def get_checkpoint_path(model_name: str):
     return f"saved_models/{model_name}"

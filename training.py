@@ -3,22 +3,25 @@ from tqdm import tqdm
 import torch
 import transformers
 import numpy as np
+import pandas as pd
 from sklearn.metrics import accuracy_score, roc_auc_score, precision_recall_fscore_support
 from pykt.models.dkt import DKT
 from pykt.models.akt import AKT
 from pykt.models.dkvmn import DKVMN
 from pykt.models.saint import SAINT
+from pyBKT.models import Model as BKT
 from sentence_transformers import SentenceTransformer
 
 from models.lm import get_model
 from models.dkt_multi_kc import DKTMultiKC
 from models.dkt_sem import DKTSem
 from models.simplekt import simpleKT
-from data_loading import load_annotated_data, get_kc_result_filename, get_default_fold, load_kc_dict, COMTA_SUBJECTS
+from data_loading import (load_annotated_data, get_kc_result_filename, get_qual_result_filename, get_default_fold, load_kc_dict,
+                          correct_to_str, standards_to_str, get_model_file_suffix, COMTA_SUBJECTS)
 from kt_data_loading import (LMKTDatasetUnpacked, LMKTCollatorUnpacked, LMKTDatasetPacked, LMKTCollatorPacked,
-                             DKTDataset, DKTCollator, get_dataloader)
+                             DKTDataset, DKTCollator, get_dataloader, apply_annotations)
 from prompting import get_true_false_tokens
-from utils import device, get_model_file_suffix, get_checkpoint_path
+from utils import device, get_checkpoint_path
 
 # ===== Common Functions =====
 
@@ -80,18 +83,23 @@ def hyperparam_sweep(args):
         file.write(result_str + "\n")
 
 def crossval(args, fn):
+    # Train/test models across folds
     metrics_agg = []
     folds = COMTA_SUBJECTS if args.split_by_subject else range(1, 6)
     for fold in folds:
         print(f"Fold {fold}...")
         metrics = fn(args, fold)
         metrics_agg.append(metrics)
+    # Aggregate and report metrics across folds
     metrics_np = np.stack(metrics_agg, axis=0)
     avg = metrics_np.mean(axis=0)
     std = metrics_np.std(axis=0)
+    metric_names = ["Loss", "Acc", "AUC", "Prec", "Rec", "F1"]
+    if len(avg) > 6:
+        metric_names += ["Acc (Final)", "AUC (Final)", "Prec (Final)", "Rec (Final)", "F1 (Final)"]
     results = [
         f"{metric}: ${avg[idx]:.2f}_{{\\pm {std[idx]:.2f}}}$" for idx, metric in
-        enumerate(["Loss", "Acc", "AUC", "Prec", "Rec", "F1", "Acc (Final)", "AUC (Final)", "Prec (Final)", "Rec (Final)", "F1 (Final)"])
+        enumerate(metric_names)
     ]
     result_str = "\n".join(results)
     print(result_str)
@@ -100,6 +108,10 @@ def crossval(args, fn):
             str(metrics_agg) + "\n",
             result_str + "\n"
         ])
+    # Aggregate and save qual analysis files across folds
+    if args.model_type == "lmkt":
+        dfs = [pd.read_csv(get_qual_result_filename(args, fold)) for fold in folds]
+        pd.concat(dfs).to_csv(get_qual_result_filename(args), index=False)
     return metrics_np
 
 def train(args):
@@ -107,9 +119,9 @@ def train(args):
         args.hyperparam_sweep = False
         return hyperparam_sweep(args)
 
-    assert args.model_name
+    assert args.model_name or args.model_type == "bkt"
     apply_defaults(args)
-    fn = train_lmkt if args.model_type == "lmkt" else train_baseline
+    fn = train_lmkt if args.model_type == "lmkt" else train_test_bkt if args.model_type == "bkt" else train_baseline
     if args.crossval:
         return crossval(args, fn)
     else:
@@ -137,11 +149,14 @@ def compute_all_metrics(loss, all_labels, all_preds, final_turn_labels, final_tu
     result_str += f"Pred - True: {sum(np.round(all_preds))}, False: {len(all_preds) - sum(np.round(all_preds))}\n"
     all_metrics = compute_metrics(all_labels, all_preds)
     result_str += "Acc: {:.2f}, AUC: {:.2f}, Prec: {:.2f}, Rec: {:.2f}, F1: {:.2f}\n".format(*all_metrics)
-    result_str += f"Final Turn ({len(final_turn_labels)} samples):\n"
-    result_str += f"GT - True: {sum(final_turn_labels)}, False: {len(final_turn_labels) - sum(final_turn_labels)}; "
-    result_str += f"Pred - True: {sum(np.round(final_turn_preds))}, False: {len(final_turn_preds) - sum(np.round(final_turn_preds))}\n"
-    final_metrics = compute_metrics(final_turn_labels, final_turn_preds)
-    result_str += "Acc: {:.2f}, AUC: {:.2f}, Prec: {:.2f}, Rec: {:.2f}, F1: {:.2f}\n".format(*final_metrics)
+    if final_turn_labels is not None:
+        result_str += f"Final Turn ({len(final_turn_labels)} samples):\n"
+        result_str += f"GT - True: {sum(final_turn_labels)}, False: {len(final_turn_labels) - sum(final_turn_labels)}; "
+        result_str += f"Pred - True: {sum(np.round(final_turn_preds))}, False: {len(final_turn_preds) - sum(np.round(final_turn_preds))}\n"
+        final_metrics = compute_metrics(final_turn_labels, final_turn_preds)
+        result_str += "Acc: {:.2f}, AUC: {:.2f}, Prec: {:.2f}, Rec: {:.2f}, F1: {:.2f}\n".format(*final_metrics)
+    else:
+        final_metrics = []
     print(result_str)
     with open(f"results/metrics_{get_model_file_suffix(args, fold)}.txt", "w") as out_file:
         out_file.write(result_str)
@@ -274,7 +289,7 @@ def test_lmkt(args, fold):
     if args.debug:
         test_df = test_df[:10]
         print(test_df.iloc[0])
-    test_dataset = KTDataset(test_df, tokenizer, args, skip_first_turn=True)
+    test_dataset = KTDataset(test_df, tokenizer, args, skip_first_turn=not args.inc_first_label)
     collator = KTCollator(tokenizer)
     test_dataloader = get_dataloader(test_dataset, collator, args.batch_size, False)
 
@@ -289,7 +304,6 @@ def test_lmkt(args, fold):
     all_kcs = []
     total_loss = 0
     for batch_idx, batch in enumerate(tqdm(test_dataloader)):
-        # TODO: potentially evaluate on all KCs in dialogue not just ones relevant for each turn
         for sample_idx, sample in enumerate(batch["meta_data"]):
             dialogue_idx_to_sample_idxs.setdefault(sample["dialogue_idx"], []).append(batch_idx + sample_idx)
         with torch.no_grad():
@@ -300,14 +314,13 @@ def test_lmkt(args, fold):
         all_kc_probs.extend(kc_probs)
         all_kcs.extend([sample["kcs"] for sample in batch["meta_data"]])
 
-    # TODO: for mathdial - compute by typical threshold
-    # Compute quantitative metrics across all turns and only on final turns
+    # Compute quantitative metrics and save metrics file
     loss = total_loss / len(test_dataloader)
     final_turn_labels = [all_labels[idxs[-1]] for idxs in dialogue_idx_to_sample_idxs.values()]
     final_turn_preds = [all_preds[idxs[-1]] for idxs in dialogue_idx_to_sample_idxs.values()]
     all_metrics, final_metrics = compute_all_metrics(loss, all_labels, all_preds, final_turn_labels, final_turn_preds, args, fold)
 
-    # Save KCs and probability predictions to file for analysis
+    # Save file for visual analysis
     kc_results = {
         dialogue_idx: [
             {
@@ -320,6 +333,43 @@ def test_lmkt(args, fold):
     }
     with open(get_kc_result_filename(args, fold), "w") as out_file:
         json.dump(kc_results, out_file, indent=2)
+
+    # Save file for qualitative analysis
+    qual_data = []
+    for dia_idx, sample in test_df.iterrows():
+        dialogue = apply_annotations(sample)
+        if dia_idx not in dialogue_idx_to_sample_idxs:
+            continue
+        dia_preds = [all_preds[idx] for idx in dialogue_idx_to_sample_idxs[dia_idx]]
+        dia_labels = [all_labels[idx] for idx in dialogue_idx_to_sample_idxs[dia_idx]]
+        dia_acc = f"{(np.round(dia_preds) == dia_labels).mean():.4f}"
+        first_turn = not args.inc_first_label
+        label_counter = 0
+        for turn in dialogue:
+            if turn["correct"] is not None and not first_turn:
+                label_idx = dialogue_idx_to_sample_idxs[dia_idx][label_counter]
+                prob = f"{all_preds[label_idx]:.4f}"
+                kc_probs = ", ".join([f"{kc_prob:.4f}" for kc_prob in all_kc_probs[label_idx]])
+                label_counter += 1
+            else:
+                prob = "--"
+                kc_probs = "--"
+            if turn["correct"] is not None and first_turn:
+                first_turn = False
+            qual_data.append({
+                "Dialogue ID": dia_idx,
+                "Turn": turn["turn"],
+                "Teacher": turn["teacher"] or "--",
+                "Student": turn["student"],
+                "Correct": correct_to_str(turn["correct"]),
+                "Prob": prob,
+                "KC Probs": kc_probs,
+                "Dialogue Acc.": dia_acc,
+                "KCs": standards_to_str(turn["kcs"], "\n"),
+                "Notes": ""
+            })
+        qual_data.append({key: "" for key in qual_data[0]})
+    pd.DataFrame(qual_data).to_csv(get_qual_result_filename(args, fold), index=False)
 
     return np.array([loss, *all_metrics, *final_metrics])
 
@@ -429,6 +479,8 @@ def compute_kc_emb_matrix(sbert_model: SentenceTransformer, kc_dict: dict):
     return kc_emb_matrix
 
 def train_baseline(args, fold):
+    assert args.model_type in BASELINE_MODELS
+
     # Load KC dictionary and optionally text embeddings
     kc_dict = load_kc_dict(args)
     if args.model_type == "dkt-sem":
@@ -553,3 +605,46 @@ def test_baseline(args, fold):
     all_metrics, final_metrics = compute_all_metrics(loss, all_labels, all_preds, final_turn_labels, final_turn_preds, args, fold)
 
     return np.array([loss, *all_metrics, *final_metrics])
+
+def bkt_prep_data(df: pd.DataFrame, kc_dict: dict):
+    dataset = DKTDataset(df, kc_dict, None, None)
+    results = []
+    order_id = 0
+    for _, sample in enumerate(dataset.data):
+        for kc, label in zip(sample["kc_ids_flat"], sample["labels_flat"]):
+            results.append({"user_id": sample["dialogue_idx"], "skill_name": str(kc), "correct": label, "order_id": order_id})
+            order_id += 1
+    return pd.DataFrame(results), dataset
+
+def train_test_bkt(args, fold):
+    # Load and reformat data
+    kc_dict = load_kc_dict(args)
+    train_df, val_df, test_df = load_annotated_data(args, fold)
+    train_df, _ = bkt_prep_data(pd.concat([train_df, val_df]), kc_dict)
+    test_df, test_dataset = bkt_prep_data(test_df, kc_dict)
+
+    # Train model
+    model = BKT(seed=221, num_fits=1)
+    model.fit(data=train_df)
+
+    # Test model
+    print("Train Acc./AUC:", model.evaluate(data=train_df, metric=["accuracy", "auc"]))
+    print("Test Acc./AUC:", model.evaluate(data=test_df, metric=["accuracy", "auc"]))
+    pred_df: pd.DataFrame = model.predict(data=test_df)
+    pred_df = pred_df.sort_values(["order_id"])
+    all_labels = []
+    all_preds = []
+    for sample, (_, user) in zip(test_dataset, pred_df.groupby("user_id", sort=False)):
+        preds_flat = user["correct_predictions"]
+        labels = sample["labels"]
+        preds = []
+        prev_idx = 0
+        for turn_end_idx in sample["turn_end_idxs"]:
+            # preds.append(np.prod(preds_flat[prev_idx : turn_end_idx + 1]))
+            preds.append(np.mean(preds_flat[prev_idx : turn_end_idx + 1]))
+            # preds.append(any(np.round(preds_flat[prev_idx : turn_end_idx + 1])))
+            prev_idx = turn_end_idx + 1
+        all_labels.extend(labels[1:])
+        all_preds.extend(preds[1:])
+    metrics, _ = compute_all_metrics(0, all_labels, all_preds, None, None, args, fold)
+    return [0, *metrics]

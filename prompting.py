@@ -1,6 +1,8 @@
 from typing import List, Optional
 from transformers import AutoTokenizer
 
+from data_loading import correct_to_str, standards_to_str
+
 # ===== General functions =====
 
 def get_dialogue_text(dialogue: List[dict], turn_idx: int = None, include_labels: bool = False, tag_wrapper: bool = True):
@@ -15,10 +17,8 @@ def get_dialogue_text(dialogue: List[dict], turn_idx: int = None, include_labels
         if turn["student"]:
             lines.append(f"Student Turn {turn['turn']}: {turn['student']}")
         if include_labels:
-            correct_str = "NA" if turn["correct"] is None else str(turn["correct"])
-            lines.append(f"Student Turn {turn['turn']} Correct: {correct_str}")
-            kcs_str = "None" if not turn["kcs"] else " ".join([f"{idx + 1}) {kc}" for idx, kc in enumerate(turn["kcs"])])
-            lines.append(f"Turn {turn['turn']} Knowledge Components: {kcs_str}")
+            lines.append(f"Student Turn {turn['turn']} Correct: {correct_to_str(turn['correct'])}")
+            lines.append(f"Turn {turn['turn']} Knowledge Components: {standards_to_str(turn['kcs'], ' ')}")
     prompt = "\n".join(lines)
     if tag_wrapper:
         prompt = "[BEGIN DIALOGUE]\n" + prompt + "\n[END DIALOGUE]"
