@@ -1,9 +1,17 @@
 # Dialogue Knowledge Tracing
-This repository contains the code for the paper <a href="">Exploring Knowledge Tracing in Tutor-Student Dialogues</a>. The primary contributions here include the code for the LLMKT and DKT-Sem models, the code for running deep KT and BKT models on dialogue KT, and the code for automatically annotating dialogues with KT labels using the OpenAI API.
+This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues</a>. The primary contributions here include the code for the LLMKT and DKT-Sem models, the code for running deep KT and BKT models on dialogue KT, and the code for automatically annotating dialogues with KT labels using the OpenAI API.
 
 If you use our code or find this work useful in your research then please cite us!
 ```
-TODO
+@misc{scarlatos2024exploringknowledgetracingtutorstudent,
+      title={Exploring Knowledge Tracing in Tutor-Student Dialogues},
+      author={Alexander Scarlatos and Andrew Lan},
+      year={2024},
+      eprint={2409.16490},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2409.16490},
+}
 ```
 
 ## Setup
