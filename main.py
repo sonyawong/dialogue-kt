@@ -58,6 +58,7 @@ def main():
         subparser.add_argument("--batch_size", type=int, help="Model batch size")
         subparser.add_argument("--crossval", action="store_true", help="Run training/testing over all folds and aggregate results")
         subparser.add_argument("--testonval", action="store_true", help="Run testing phase on validation set (automatic for hyperparam_sweep)")
+        subparser.add_argument("--agg", type=str, choices=["prod", "mean-ar", "mean-geo"], default="mean-geo", help="Method for aggregating KC probabilities into correctness probability")
         subparser.add_argument("--pack_kcs", type=bool_type, default=True, help="For LLMKT, pack all KCs for a turn in a single prompt")
         subparser.add_argument("--quantize", type=bool_type, default=False, help="Quantize LLMKT base model")
         subparser.add_argument("--prompt_inc_labels", type=bool_type, default=False, help="For LLMKT, include explicit correctness and KC labels in prompt")

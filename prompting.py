@@ -140,3 +140,10 @@ def kt_user_prompt(sample: dict, dialogue_anno: List[dict], turn_idx: int, kc: O
     if kc:
         prompt += " " + kc
     return prompt
+
+def dkt_sem_prompt(teacher_turn: str, student_turn: str, kcs: List[str], correct: bool):
+    return f"""A teacher and a student are having a dialogue about math concepts. Below is a single turn pair from that dialouge, where the student responds to the teacher. In addition, there are knowledge components that represent the learning objectives in the teacher's question. Finally, it is identified if the student's response to the teacher was correct or incorrect.
+Teacher: {teacher_turn}
+Student: {student_turn}
+Knowledge Components: {standards_to_str(kcs, ' ')}
+Student Correct: {correct_to_str(correct)}"""

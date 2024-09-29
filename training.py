@@ -60,7 +60,7 @@ def hyperparam_sweep(args):
     if args.model_type == "lmkt":
         for lr in [5e-5, 1e-4, 2e-4, 3e-4]:
             for r in [2, 4, 8, 16, 32]:
-                args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_lmkt_lr{lr}_r{r}"
+                args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_lmkt_agg{args.agg}_lr{lr}_r{r}"
                 args.lr = lr
                 args.r = r
                 args.lora_alpha = r
@@ -69,7 +69,7 @@ def hyperparam_sweep(args):
     else:
         for lr in [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3]:
             for emb_size in [8, 16, 32, 64, 128, 256]:
-                args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}_lr{lr}_es{emb_size}"
+                args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}_agg{args.agg}_lr{lr}_es{emb_size}"
                 args.lr = lr
                 args.emb_size = emb_size
                 model_names.append(args.model_name)
@@ -165,7 +165,7 @@ def compute_all_metrics(loss, all_labels, all_preds, final_turn_labels, final_tu
 
 # ===== LMKT =====
 
-def get_lmkt_loss_unpacked(model, batch, true_token, false_token):
+def get_lmkt_loss_unpacked(model, batch, true_token, false_token, args):
     # Get logits at last token of each sequence
     model_output = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
     batch_size = model_output.logits.shape[0]
@@ -179,14 +179,20 @@ def get_lmkt_loss_unpacked(model, batch, true_token, false_token):
     corr_probs = []
     for num_kcs in batch["num_kcs"]:
         kc_probs_grouped.append(kc_probs[num_kc_counter : num_kc_counter + num_kcs].tolist())
-        corr_probs.append(kc_probs[num_kc_counter : num_kc_counter + num_kcs].prod())
+        if args.agg == "prod":
+            prob = kc_probs[num_kc_counter : num_kc_counter + num_kcs].prod()
+        elif args.agg == "mean-ar":
+            prob = kc_probs[num_kc_counter : num_kc_counter + num_kcs].mean()
+        elif args.agg == "mean-geo":
+            prob = kc_probs[num_kc_counter : num_kc_counter + num_kcs].prod() ** (1 / num_kcs)
+        corr_probs.append(prob)
         num_kc_counter += num_kcs
     corr_probs = torch.stack(corr_probs)
     # Get BCE loss with correctness labels and predicted probabilities
     loss = torch.nn.BCELoss()(corr_probs, batch["labels"])
     return loss, kc_probs_grouped, corr_probs
 
-def get_lmkt_loss_packed(model, batch, true_token, false_token):
+def get_lmkt_loss_packed(model, batch, true_token, false_token, args):
     # Invert attention mask
     attention_mask = batch["attention_mask"]
     min_dtype = torch.finfo(model.dtype).min
@@ -202,10 +208,16 @@ def get_lmkt_loss_packed(model, batch, true_token, false_token):
     kc_probs = torch.softmax(logits, dim=2)[:, :, 0]
     # Get probability that all KCs are True for each turn in the batch
     kc_probs_grouped = [probs[:num_kcs].tolist() for probs, num_kcs in zip(kc_probs, batch["num_kcs"])]
-    # Set probs to 1 on padded indices
-    kc_probs = torch.masked_scatter(kc_probs, batch["last_idxs"].to(device) == 0, torch.ones_like(kc_probs).to(device))
+    # Set probs on padded indices
+    padding_val = 0 if args.agg == "mean-ar" else 1
+    kc_probs = torch.masked_scatter(kc_probs, batch["last_idxs"].to(device) == 0, torch.full_like(kc_probs, padding_val).to(device))
     # Get BCE loss with correctness labels and predicted probabilities
-    corr_probs = kc_probs.prod(dim=1)
+    if args.agg == "prod":
+        corr_probs = kc_probs.prod(dim=1)
+    elif args.agg == "mean-ar":
+        corr_probs = kc_probs.sum(dim=1) / batch["num_kcs"]
+    elif args.agg == "mean-geo":
+        corr_probs = kc_probs.prod(dim=1) ** (1 / batch["num_kcs"])
     loss = torch.nn.BCELoss()(corr_probs, batch["labels"])
     return loss, kc_probs_grouped, corr_probs
 
@@ -246,7 +258,7 @@ def train_lmkt(args, fold):
 
         model.train()
         for batch_idx, batch in enumerate(tqdm(train_dataloader, desc="Training")):
-            loss, _, _ = get_loss(model, batch, true_token, false_token)
+            loss, _, _ = get_loss(model, batch, true_token, false_token, args)
             total_train_loss += loss.item()
             loss = loss / args.grad_accum_steps
             loss.backward()
@@ -259,7 +271,7 @@ def train_lmkt(args, fold):
         with torch.no_grad():
             model.eval()
             for batch in tqdm(val_dataloader, desc="Validating"):
-                loss, _, _ = get_loss(model, batch, true_token, false_token)
+                loss, _, _ = get_loss(model, batch, true_token, false_token, args)
                 total_val_loss += loss.item()
 
         avg_train_loss = total_train_loss / len(train_dataloader)
@@ -307,7 +319,7 @@ def test_lmkt(args, fold):
         for sample_idx, sample in enumerate(batch["meta_data"]):
             dialogue_idx_to_sample_idxs.setdefault(sample["dialogue_idx"], []).append(batch_idx + sample_idx)
         with torch.no_grad():
-            loss, kc_probs, corr_probs = get_loss(model, batch, true_token, false_token)
+            loss, kc_probs, corr_probs = get_loss(model, batch, true_token, false_token, args)
         total_loss += loss.item()
         all_labels.extend(batch["labels"].tolist())
         all_preds.extend(corr_probs.tolist())
@@ -388,14 +400,22 @@ def select_flat_baseline_out_vectors(y: torch.Tensor, batch, shift_turn_end_idxs
     turn_end_idxs = batch["turn_end_idxs"].unsqueeze(2).repeat(1, 1, y.shape[2])
     return torch.gather(y, 1, turn_end_idxs)
 
-def get_baseline_loss(y: torch.Tensor, batch):
+def get_baseline_loss(y: torch.Tensor, batch, args):
     # Aggregate KC probs from outputs, one output per question
     batch_size, max_seq_len, max_num_kcs = batch["kc_ids"].shape
     kc_pad_mask = torch.arange(max_num_kcs).repeat(batch_size, max_seq_len, 1).to(device) >= batch["num_kcs"].unsqueeze(2)
     y = y[:, :-1].contiguous() # Last item in sequence doesn't predict anything
     kc_probs = torch.gather(y, 2, batch["kc_ids"][:, 1:]) # Collect KC predictions for next question, B x L x K
-    kc_probs = torch.masked_scatter(kc_probs, kc_pad_mask[:, 1:], torch.ones_like(kc_probs).to(device)) # Set probs to 1 at padding ids
-    corr_probs = kc_probs.prod(dim=2) # B x L
+    # Set probs on padded indices
+    padding_val = 0 if args.agg == "mean-ar" else 1
+    kc_probs = torch.masked_scatter(kc_probs, kc_pad_mask[:, 1:], torch.full_like(kc_probs, padding_val).to(device))
+    # Calculate correct probabilities (B x L)
+    if args.agg == "prod":
+        corr_probs = kc_probs.prod(dim=2)
+    elif args.agg == "mean-ar":
+        corr_probs = kc_probs.sum(dim=2) / batch["num_kcs"][:, 1:]
+    elif args.agg == "mean-geo":
+        corr_probs = kc_probs.prod(dim=2) ** (1 / batch["num_kcs"][:, 1:])
 
     # Compute BCE loss
     labels_flat = batch["labels"][:, 1:].contiguous().view(-1)
@@ -437,28 +457,28 @@ def get_baseline_model(kc_dict: dict, kc_emb_matrix: torch.Tensor, args):
 def compute_baseline_loss(model, batch, args):
     if args.model_type == "dkt-multi":
         y = model(batch)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     elif args.model_type == "dkt-sem":
         y = model(batch)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     elif args.model_type == "dkt":
         y = model(batch["kc_ids_flat"], batch["labels_flat"])
         y = select_flat_baseline_out_vectors(y, batch, False)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     elif args.model_type == "akt":
         y, rasch_loss = model(batch["kc_ids_flat"], batch["labels_flat"], batch["kc_ids_flat"])
         y = select_flat_baseline_out_vectors(y, batch, True)
-        loss, corr_probs = get_baseline_loss(y, batch)
+        loss, corr_probs = get_baseline_loss(y, batch, args)
         loss += rasch_loss
         return loss, corr_probs
     elif args.model_type == "dkvmn":
         y = model(batch["kc_ids_flat"], batch["labels_flat"])
         y = select_flat_baseline_out_vectors(y, batch, True)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     elif args.model_type == "saint":
         y = model(batch["kc_ids_flat"], batch["kc_ids_flat"], batch["labels_flat"][:, :-1])
         y = select_flat_baseline_out_vectors(y, batch, True)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     elif args.model_type == "simplekt":
         y = model({
             "qseqs": batch["kc_ids_flat"][:, :-1],
@@ -469,7 +489,7 @@ def compute_baseline_loss(model, batch, args):
             "shft_rseqs": batch["labels_flat"][:, 1:]
         })
         y = select_flat_baseline_out_vectors(y, batch, True)
-        return get_baseline_loss(y, batch)
+        return get_baseline_loss(y, batch, args)
     raise Exception(f"Model {args.model_type} not supported")
 
 def compute_kc_emb_matrix(sbert_model: SentenceTransformer, kc_dict: dict):
@@ -640,9 +660,12 @@ def train_test_bkt(args, fold):
         preds = []
         prev_idx = 0
         for turn_end_idx in sample["turn_end_idxs"]:
-            # preds.append(np.prod(preds_flat[prev_idx : turn_end_idx + 1]))
-            preds.append(np.mean(preds_flat[prev_idx : turn_end_idx + 1]))
-            # preds.append(any(np.round(preds_flat[prev_idx : turn_end_idx + 1])))
+            if args.agg == "prod":
+                preds.append(np.prod(preds_flat[prev_idx : turn_end_idx + 1]))
+            elif args.agg == "mean-ar":
+                preds.append(np.mean(preds_flat[prev_idx : turn_end_idx + 1]))
+            elif args.agg == "mean-geo":
+                preds.append(np.prod(preds_flat[prev_idx : turn_end_idx + 1]) ** (1 / (turn_end_idx - prev_idx + 1)))
             prev_idx = turn_end_idx + 1
         all_labels.extend(labels[1:])
         all_preds.extend(preds[1:])

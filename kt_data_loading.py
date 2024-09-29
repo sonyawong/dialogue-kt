@@ -5,7 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from sentence_transformers import SentenceTransformer
 
-from prompting import kt_system_prompt, kt_user_prompt
+from models.dkt_sem import ALT_ARCH
+from prompting import kt_system_prompt, kt_user_prompt, dkt_sem_prompt
 from utils import device
 
 def apply_annotations(sample: dict, apply_na: bool = True):
@@ -91,7 +92,7 @@ class LMKTCollatorUnpacked:
             "input_ids": prompts_tokenized.input_ids,
             "attention_mask": prompts_tokenized.attention_mask,
             "last_idxs": prompts_tokenized.attention_mask.sum(dim=-1) - 2, # Take index of token before eos
-            "num_kcs": [len(sample["prompts"]) for sample in batch],
+            "num_kcs": torch.LongTensor([len(sample["prompts"]) for sample in batch]).to(device),
             "labels": torch.Tensor([sample["label"] for sample in batch]).to(device),
             "meta_data": batch
         }
@@ -180,7 +181,7 @@ class LMKTCollatorPacked:
             "attention_mask": attention_mask.unsqueeze(1).to(device), # Add singleton head dimension
             "position_ids": position_ids.to(device),
             "last_idxs": last_idxs,
-            "num_kcs": [len(sample["kcs"]) for sample in batch],
+            "num_kcs": torch.LongTensor([len(sample["kcs"]) for sample in batch]).to(device),
             "labels": torch.Tensor([sample["label"] for sample in batch]).to(device),
             "meta_data": batch
         }
@@ -198,7 +199,8 @@ class DKTDataset(DatasetBase):
                 continue
             dialogue_data = {
                 "labels": [], "labels_flat": [], "kc_ids": [], "kc_ids_flat": [], "turn_end_idxs": [],
-                "kc_embs": [], "teacher_turns": [], "student_turns": [], "dialogue": dialogue, "dialogue_idx": idx
+                "teacher_turns": [], "student_turns": [], "kcs": [], "kc_embs": [],
+                "dialogue": dialogue, "dialogue_idx": idx
             }
             for turn in dialogue:
                 if turn["correct"] is None:
@@ -211,6 +213,7 @@ class DKTDataset(DatasetBase):
                 dialogue_data["turn_end_idxs"].append(len(dialogue_data["kc_ids_flat"]) - 1)
                 dialogue_data["teacher_turns"].append(turn["teacher"])
                 dialogue_data["student_turns"].append(turn["student"])
+                dialogue_data["kcs"].append(turn["kcs"])
                 if kc_emb_matrix is not None:
                     dialogue_data["kc_embs"].append(
                         kc_emb_matrix[dialogue_data["kc_ids"][-1]].mean(dim=0)
@@ -222,21 +225,36 @@ class DKTDataset(DatasetBase):
                 num_correct += sum(dialogue_data["labels"])
         # Batch encode all dialogue text
         if sbert_model is not None:
-            seqs = [turn for dialogue in self.data for turn in dialogue["teacher_turns"]] + [
-                    turn for dialogue in self.data for turn in dialogue["student_turns"]]
             batch_size = 512
-            result_embs = []
-            for batch_start_idx in range(0, len(seqs), batch_size):
-                batch = seqs[batch_start_idx : batch_start_idx + batch_size]
-                result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
-            result_embs = torch.concat(result_embs, dim=0)
-            turn_counter = 0
-            for dialogue in self.data:
-                seq_len = len(dialogue["labels"])
-                dialogue["teacher_embs"] = result_embs[turn_counter : turn_counter + seq_len]
-                stud_start = result_embs.shape[0] // 2
-                dialogue["student_embs"] = result_embs[stud_start + turn_counter : stud_start + turn_counter + seq_len]
-                turn_counter += seq_len
+            if ALT_ARCH:
+                seqs = [dkt_sem_prompt(tt, st, kcs, corr)
+                        for dialogue in self.data
+                        for tt, st, kcs, corr in zip(dialogue["teacher_turns"], dialogue["student_turns"], dialogue["kcs"], dialogue["labels"])]
+                result_embs = []
+                for batch_start_idx in range(0, len(seqs), batch_size):
+                    batch = seqs[batch_start_idx : batch_start_idx + batch_size]
+                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
+                result_embs = torch.concat(result_embs, dim=0)
+                turn_counter = 0
+                for dialogue in self.data:
+                    seq_len = len(dialogue["labels"])
+                    dialogue["turn_embs"] = result_embs[turn_counter : turn_counter + seq_len]
+                    turn_counter += seq_len
+            else:
+                seqs = [turn for dialogue in self.data for turn in dialogue["teacher_turns"]] + [
+                        turn for dialogue in self.data for turn in dialogue["student_turns"]]
+                result_embs = []
+                for batch_start_idx in range(0, len(seqs), batch_size):
+                    batch = seqs[batch_start_idx : batch_start_idx + batch_size]
+                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
+                result_embs = torch.concat(result_embs, dim=0)
+                turn_counter = 0
+                for dialogue in self.data:
+                    seq_len = len(dialogue["labels"])
+                    dialogue["teacher_embs"] = result_embs[turn_counter : turn_counter + seq_len]
+                    stud_start = result_embs.shape[0] // 2
+                    dialogue["student_embs"] = result_embs[stud_start + turn_counter : stud_start + turn_counter + seq_len]
+                    turn_counter += seq_len
         self.majority_class = 1 if num_correct / num_data_points >= .5 else 0
         print(f"{failed} / {len(data)} dialogues failed processing")
         print(f"Num dialogues: {len(self.data)}, num data points: {num_data_points}, {num_correct} correct")
@@ -279,8 +297,8 @@ class DKTCollator:
                 "turn_end_idxs": turn_end_idxs.to(device)
             }
 
-        if batch[0]["kc_embs"]:
-            # Add text embeddings
+        # Add text embeddings for DKT-Sem
+        if batch[0]["kc_embs"] and not ALT_ARCH:
             kc_embs = pad_sequence([torch.stack(seq["kc_embs"]) for seq in batch], batch_first=True)
             teacher_embs = pad_sequence([seq["teacher_embs"] for seq in batch], batch_first=True)
             student_embs = pad_sequence([seq["student_embs"] for seq in batch], batch_first=True)
@@ -289,6 +307,12 @@ class DKTCollator:
                 "kc_embs": kc_embs,
                 "teacher_embs": teacher_embs,
                 "student_embs": student_embs
+            }
+        elif "turn_embs" in batch[0]:
+            turn_embs = pad_sequence([seq["turn_embs"] for seq in batch], batch_first=True)
+            result = {
+                **result,
+                "turn_embs": turn_embs
             }
 
         return result

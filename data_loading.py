@@ -4,8 +4,6 @@ import re
 from ast import literal_eval
 import pandas as pd
 
-from utils import get_model_file_suffix
-
 COMTA_SUBJECTS = ["Elementary", "Algebra", "Trigonometry", "Geometry"]
 
 def add_content(cur: str, new: str):
@@ -164,11 +162,13 @@ def load_annotated_data(args, fold: Union[int, str, None] = 1):
 def get_model_file_suffix(args, fold = None):
     suffix = "_incfirst" if args.inc_first_label else ""
     suffix += f"_{fold}" if fold else ""
-    if args.model_type in ("random", "majority", "bkt"):
-        return args.dataset + "_" + args.model_type + suffix
     if args.model_name:
         return args.model_name + suffix
-    return args.dataset + "_" + args.base_model.replace("/", "-") + suffix
+    if args.model_type == "lmkt": # Zero-shot LLMKT
+        model_name = args.base_model.replace("/", "-")
+    else:
+        model_name = args.model_type
+    return f"{args.dataset}_{model_name}_agg{args.agg}" + suffix
 
 def get_kc_result_filename(args, fold):
     return f"results/kcs_{get_model_file_suffix(args, fold)}.json"
