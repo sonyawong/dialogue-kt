@@ -1,5 +1,5 @@
 # Dialogue Knowledge Tracing
-This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues</a>. The primary contributions here include the code for the LLMKT and DKT-Sem models, the code for running deep KT and BKT models on dialogue KT, and the code for automatically annotating dialogues with KT labels using the OpenAI API.
+This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues</a>. The primary contributions here include code for 1) our language model-based LLMKT and DKT-Sem models, 2) running DKT family and BKT models on dialogue knowledge tracing, and 3) automatically annotating dialogues with knowledge component and correctness labels using the OpenAI API.
 
 If you use our code or find this work useful in your research then please cite us!
 ```
@@ -14,10 +14,18 @@ If you use our code or find this work useful in your research then please cite u
 }
 ```
 
+## Annotated Data
+
+Annotated versions of the CoMTA and MathDial datasets (i.e. including per-turn knowledge component and correctness labels) are available in `data/annotated`, and can be loaded as-is during knowledge tracing training.
+
+These versions of the datasets are subject to their original licenses. The license for CoMTA is available in `data/annotated/COMTA_LICENSE.txt` and MathDial is licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">Creative Commons Attribution-ShareAlike 4.0 International License</a>.
+
 ## Setup
 
 ### Download Data
-<b>Achieve the Core (ATC)</b>: Download the <a href="https://huggingface.co/datasets/allenai/achieve-the-core">ATC HuggingFace dataset</a> and put `standards.jsonl` and `domain_groups.json` under `src/ATC`. At the time of releasing this code, the data was not accessible via HuggingFace due to a bug. If the data is still not accessible then you can contact us or the authors of <a href="https://arxiv.org/pdf/2408.04226">the paper</a> to send you a copy.
+This step is not necessary to reproduce our knowledge tracing results since we release the annotated data in `data/annotated`. However, you can follow the steps below to replicate our workflow or to experiment with custom data annotation.
+
+<b>Achieve the Core (ATC)</b>: Download the <a href="https://huggingface.co/datasets/allenai/achieve-the-core">ATC HuggingFace dataset</a> and put `standards.jsonl` and `domain_groups.json` under `data/src/ATC/`. At the time of releasing this code, the data was not accessible via HuggingFace due to a bug. If the data is still not accessible then you can contact us or the authors of <a href="https://arxiv.org/pdf/2408.04226">the paper</a> to send you a copy.
 
 <b>CoMTA</b>: Download the <a href="https://github.com/Khan/tutoring-accuracy-dataset/blob/main/CoMTA_dataset.json">CoMTA data file</a> and put it under `data/src`.
 
@@ -38,7 +46,9 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8 # For enabling deterministic operations
 ```
 
 ## Prepare Dialogues for KT (Run Annotation with OpenAI)
-Dialogue KT requires each dialogue turn to be annotated with correctness and KC labels. We automated this process with LLM prompting via the OpenAI API. You can run the following to tag correctness and ATC standard KCs on the two datasets:
+This step is not necessary to reproduce our results because we release the annotated datasets, but is here for reference.
+
+Dialogue KT requires each dialogue turn to be annotated with correctness and knowledge component (KC) labels. We automate this process with LLM prompting via the OpenAI API. You can run the following to tag correctness and ATC standard KCs on the two datasets:
 ```
 python main.py annotate --mode collect --openai_model gpt-4o --dataset comta
 python main.py annotate --mode collect --openai_model gpt-4o --dataset mathdial
