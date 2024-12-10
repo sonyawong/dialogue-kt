@@ -58,13 +58,13 @@ def visualize_average(kc_info, args):
             for probs in prob_lists:
                 plt.plot(np.arange(len(probs)), probs)
         plt.grid(True, which="major")
-        plt.axis([.5, 15.5, -.22, .22])
+        plt.axis([.5, 15.5, -.42, .42])
         plt.xticks(np.arange(1, 16, 2))
         plt.xlabel("KC Occurrence")
         plt.ylabel("Change in KC Mastery")
         # plt.title("\n".join(wrap(kc.split(";")[0], 70)), fontsize=24)
         # plt.show()
-        plt.savefig(f"../results/linear_kc_{args.dataset}_{kc_idx}{'_delta' if plot_deltas else ''}.png", dpi=300, bbox_inches="tight")
+        plt.savefig(f"results/linear_kc_{args.dataset}_{kc_idx}{'_delta' if plot_deltas else ''}.png", dpi=300, bbox_inches="tight")
         plt.close()
 
 def analyze_qual_data(args):

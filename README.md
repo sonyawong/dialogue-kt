@@ -1,16 +1,14 @@
 # Dialogue Knowledge Tracing
-This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues</a>. The primary contributions here include code for 1) our language model-based LLMKT and DKT-Sem models, 2) running DKT family and BKT models on dialogue knowledge tracing, and 3) automatically annotating dialogues with knowledge component and correctness labels using the OpenAI API.
+This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues using LLMs</a>. The primary contributions here include code for 1) our language model-based LLMKT and DKT-Sem models, 2) running DKT family and BKT models on dialogue knowledge tracing, and 3) automatically annotating dialogues with knowledge component and correctness labels using the OpenAI API.
 
 If you use our code or find this work useful in your research then please cite us!
 ```
-@misc{scarlatos2024exploringknowledgetracingtutorstudent,
-      title={Exploring Knowledge Tracing in Tutor-Student Dialogues},
-      author={Alexander Scarlatos and Andrew Lan},
-      year={2024},
-      eprint={2409.16490},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2409.16490},
+@inproceedings{scarlatos2024exploringknowledgetracingtutorstudent,
+      title={Exploring Knowledge Tracing in Tutor-Student Dialogues using LLMs},
+      author={Alexander Scarlatos and Ryan S. Baker and Andrew Lan},
+      year={2025},
+      booktitle={Proceedings of the 15th Learning Analytics and Knowledge Conference, {LAK} 2025, Dublin, Ireland, March 3-7, 2025},
+      publisher={{ACM}},
 }
 ```
 
@@ -60,16 +58,16 @@ python main.py annotate --mode analyze --dataset comta
 python main.py annotate --mode analyze --dataset mathdial
 ```
 
-## Evaluate KT Methods
+## Train and Evaluate KT Methods
 Each of the following runs a train/test cross-validation on the CoMTA data for a different model:
 ```
-python main.py train --dataset comta --crossval --model_type lmkt --model_name lmkt_model         # LLMKT
-python main.py train --dataset comta --crossval --model_type dkt-sem --model_name dkt_sem_model   # DKT-Sem
-python main.py train --dataset comta --crossval --model_type dkt --model_name dkt_model           # DKT
-python main.py train --dataset comta --crossval --model_type dkvmn --model_name dkvmn_model       # DKVMN
-python main.py train --dataset comta --crossval --model_type akt --model_name akt_model           # AKT
-python main.py train --dataset comta --crossval --model_type saint --model_name saint_model       # SAINT
-python main.py train --dataset comta --crossval --model_type simplekt --model_name simplekt_model # simpleKT
+python main.py train --dataset comta --crossval --model_type lmkt --model_name lmkt_comta         # LLMKT
+python main.py train --dataset comta --crossval --model_type dkt-sem --model_name dkt-sem_comta   # DKT-Sem
+python main.py train --dataset comta --crossval --model_type dkt --model_name dkt_comta           # DKT
+python main.py train --dataset comta --crossval --model_type dkvmn --model_name dkvmn_comta       # DKVMN
+python main.py train --dataset comta --crossval --model_type akt --model_name akt_comta           # AKT
+python main.py train --dataset comta --crossval --model_type saint --model_name saint_comta       # SAINT
+python main.py train --dataset comta --crossval --model_type simplekt --model_name simplekt_comta # simpleKT
 python main.py train --dataset comta --crossval --model_type bkt                                  # BKT
 ```
 
@@ -94,19 +92,19 @@ python main.py test --dataset comta --crossval --model_type dkt --model_name <co
 #### Best Hyperparameters Found
 
 CoMTA:
-- DKT-Sem: lr=5e-3, emb_size=128
-- DKT: lr=5e-3, emb_size=64
-- DKVMN: lr=2e-4, emb_size=8
-- AKT: lr=1e-3, emb_size=16
-- SAINT: lr=1e-4, emb_size=8
-- simpleKT: lr=1e-3, emb_size=32
+- DKT-Sem: lr=2e-4, emb_size=256
+- DKT: lr=1e-3, emb_size=32
+- DKVMN: lr=1e-4, emb_size=16
+- AKT: lr=5e-3, emb_size=32
+- SAINT: lr=1e-3, emb_size=32
+- simpleKT: lr=2e-4, emb_size=16
 
 MathDial:
-- DKT-Sem: lr=1e-3, emb_size=256
-- DKT: lr=5e-4, emb_size=256
-- DKVMN: lr=5e-3, emb_size=32
-- AKT: lr=2e-4, emb_size=256
-- SAINT: lr=1e-3, emb_size=64
+- DKT-Sem: lr=2e-3, emb_size=512
+- DKT: lr=5e-3, emb_size=256
+- DKVMN: lr=1e-3, emb_size=128
+- AKT: lr=2e-4, emb_size=64
+- SAINT: lr=2e-4, emb_size=64
 - simpleKT: lr=5e-4, emb_size=256
 
 ## Visualize Learning Curves

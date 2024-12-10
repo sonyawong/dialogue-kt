@@ -150,7 +150,7 @@ class LMKTCollatorPacked:
             (input_ids[seq_idx] == self.tokenizer.eos_token_id).nonzero().squeeze().cpu()
             for seq_idx in range(batch_size)
         ]
-        # Create default lower triangular 4D attention mask
+        # Create default lower triangular 3D attention mask
         attention_mask = torch.ones((max_seq_len, max_seq_len)).tril().repeat(batch_size, 1, 1)
         tril_mask = attention_mask[0].type(torch.bool)
         # Create default 2D position id matrix

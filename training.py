@@ -50,6 +50,7 @@ def apply_defaults(args):
     for key, val in defaults.items():
         if getattr(args, key, None) is None:
             setattr(args, key, val)
+    print("Arguments:", args)
 
 def hyperparam_sweep(args):
     apply_defaults(args)
@@ -59,7 +60,7 @@ def hyperparam_sweep(args):
     results = []
     if args.model_type == "lmkt":
         for lr in [5e-5, 1e-4, 2e-4, 3e-4]:
-            for r in [2, 4, 8, 16, 32]:
+            for r in [4, 8, 16, 32]:
                 args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_lmkt_agg{args.agg}_lr{lr}_r{r}"
                 args.lr = lr
                 args.r = r
@@ -68,7 +69,7 @@ def hyperparam_sweep(args):
                 results.append(train(args))
     else:
         for lr in [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3]:
-            for emb_size in [8, 16, 32, 64, 128, 256]:
+            for emb_size in [8, 16, 32, 64, 128, 256, 512]:
                 args.model_name = f"hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}_agg{args.agg}_lr{lr}_es{emb_size}"
                 args.lr = lr
                 args.emb_size = emb_size
@@ -79,7 +80,7 @@ def hyperparam_sweep(args):
     result_str = "\n".join([f"{model_name}: {auc:.2f}" for model_name, auc in zip(model_names, aucs)])
     result_str += f"\nBest: {model_names[best_model_idx]}: {aucs[best_model_idx]:.2f}"
     print(result_str)
-    with open(f"results/metrics_hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}.txt", "w") as file:
+    with open(f"results/metrics_hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}_agg{args.agg}.txt", "w") as file:
         file.write(result_str + "\n")
 
 def crossval(args, fn):
