@@ -48,45 +48,45 @@ This step is not necessary to reproduce our results because we release the annot
 
 Dialogue KT requires each dialogue turn to be annotated with correctness and knowledge component (KC) labels. We automate this process with LLM prompting via the OpenAI API. You can run the following to tag correctness and ATC standard KCs on the two datasets:
 ```
-python main.py annotate --mode collect --openai_model gpt-4o --dataset comta
-python main.py annotate --mode collect --openai_model gpt-4o --dataset mathdial
+python -m dialogue_kt.main annotate --mode collect --openai_model gpt-4o --dataset comta
+python -m dialogue_kt.main annotate --mode collect --openai_model gpt-4o --dataset mathdial
 ```
 
 To see statistics on the resulting labels, run:
 ```
-python main.py annotate --mode analyze --dataset comta
-python main.py annotate --mode analyze --dataset mathdial
+python -m dialogue_kt.main annotate --mode analyze --dataset comta
+python -m dialogue_kt.main annotate --mode analyze --dataset mathdial
 ```
 
 ## Train and Evaluate KT Methods
 Each of the following runs a train/test cross-validation on the CoMTA data for a different model:
 ```
-python main.py train --dataset comta --crossval --model_type lmkt --model_name lmkt_comta         # LLMKT
-python main.py train --dataset comta --crossval --model_type dkt-sem --model_name dkt-sem_comta   # DKT-Sem
-python main.py train --dataset comta --crossval --model_type dkt --model_name dkt_comta           # DKT
-python main.py train --dataset comta --crossval --model_type dkvmn --model_name dkvmn_comta       # DKVMN
-python main.py train --dataset comta --crossval --model_type akt --model_name akt_comta           # AKT
-python main.py train --dataset comta --crossval --model_type saint --model_name saint_comta       # SAINT
-python main.py train --dataset comta --crossval --model_type simplekt --model_name simplekt_comta # simpleKT
-python main.py train --dataset comta --crossval --model_type bkt                                  # BKT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type lmkt --model_name lmkt_comta         # LLMKT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type dkt-sem --model_name dkt-sem_comta   # DKT-Sem
+python -m dialogue_kt.main train --dataset comta --crossval --model_type dkt --model_name dkt_comta           # DKT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type dkvmn --model_name dkvmn_comta       # DKVMN
+python -m dialogue_kt.main train --dataset comta --crossval --model_type akt --model_name akt_comta           # AKT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type saint --model_name saint_comta       # SAINT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type simplekt --model_name simplekt_comta # simpleKT
+python -m dialogue_kt.main train --dataset comta --crossval --model_type bkt                                  # BKT
 ```
 
 Check the `results` folder for metric summaries and turn-level predictions for analysis.
 
 To see all training options, run:
 ```
-python main.py train --help
+python -m dialogue_kt.main train --help
 ```
 
 ### Hyperparameter Sweep
 We run a grid search to find the optimal hyperparameters for the DKT family models. For example, to run a search for DKT on CoMTA, run the following (crossval is inferred and model_name is set automatically):
 ```
-python main.py train --dataset comta --hyperparam_sweep --model_type dkt
+python -m dialogue_kt.main train --dataset comta --hyperparam_sweep --model_type dkt
 ```
 
 The output will indicate the model that achieved the highest validation AUC. To get its performance on the test folds, run:
 ```
-python main.py test --dataset comta --crossval --model_type dkt --model_name <copy from output> --emb_size <get from model_name>
+python -m dialogue_kt.main test --dataset comta --crossval --model_type dkt --model_name <copy from output> --emb_size <get from model_name>
 ```
 
 #### Best Hyperparameters Found
@@ -110,5 +110,5 @@ MathDial:
 ## Visualize Learning Curves
 To generate the learning curve graphs, run the following (they will be placed in `results`):
 ```
-python main.py visualize --dataset comta --model_name <trained model to visualize predictions for>
+python -m dialogue_kt.main visualize --dataset comta --model_name <trained model to visualize predictions for>
 ```
