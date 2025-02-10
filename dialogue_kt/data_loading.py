@@ -75,11 +75,12 @@ def load_mathdial_src_data(split: str):
     with open(f"data/src/mathdial/data/{split}.jsonl") as file:
         data = [json.loads(line) for line in file]
     proc_data = []
-    for sample in data:
+    for index, sample in enumerate(data):
         if not sample["self-typical-confusion"] or not sample["self-typical-interactions"]:
             continue
         # Add dialogue and meta data
         proc_data.append({
+            "index": index,
             **sample,
             "dialogue": process_dialogue([
                 {"role": "teacher" if turn.startswith("Teacher") else "student", "content": turn_prefix_re.sub("", turn)}
