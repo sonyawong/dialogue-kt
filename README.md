@@ -1,5 +1,5 @@
 # Dialogue Knowledge Tracing
-This repository contains the code for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues using LLMs</a>. The primary contributions here include code for 1) our language model-based LLMKT and DKT-Sem models, 2) running DKT family and BKT models on dialogue knowledge tracing, and 3) automatically annotating dialogues with knowledge component and correctness labels using the OpenAI API.
+This is the official repo for the paper <a href="https://arxiv.org/abs/2409.16490">Exploring Knowledge Tracing in Tutor-Student Dialogues using LLMs</a>. The primary contributions here include 1) LLMKT and DKT-Sem, our language model-based KT models, 2) code to train and evaluate KT models, including the DKT family and BKT, on the dialogue knowledge tracing task, and 3) code to automatically annotate dialogues with knowledge component and correctness labels using the OpenAI API.
 
 If you use our code or find this work useful in your research then please cite us!
 ```
