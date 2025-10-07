@@ -70,6 +70,28 @@ def load_comta_src_data():
         })
     return pd.DataFrame(proc_data)
 
+def load_comta_src_data():
+    with open("data/src/CoMTA_dataset.json") as file:
+        data = json.load(file)
+    proc_data = []
+    for index, sample in enumerate(data):
+        # Skip calculus since not in ATC
+        if sample["math_level"] == "Calculus":
+            continue
+        # Add dialogue and meta data
+        proc_data.append({
+            "index": index,
+            "dialogue": process_dialogue([
+                {"role": "student" if turn["role"] == "user" else "teacher", "content": turn["content"]}
+                for turn in sample["data"]
+            ]),
+            "meta_data": {
+                "expected_result": sample["expected_result"],
+                "math_level": sample["math_level"]
+            }
+        })
+    return pd.DataFrame(proc_data)
+
 def load_mathdial_src_data(split: str):
     turn_prefix_re = re.compile(r"^[a-zA-Z]+: (\([a-z]+\))?")
     with open(f"data/src/mathdial/data/{split}.jsonl") as file:
@@ -96,6 +118,7 @@ def load_mathdial_src_data(split: str):
             }
         })
     return pd.DataFrame(proc_data)
+
 
 def load_src_data(args, split: str = ""):
     if args.dataset == "comta":
@@ -160,6 +183,23 @@ def load_annotated_data(args, fold: Union[int, str, None] = 1):
             train_df[int(.8 * len(train_df)):],
             test_df
         )
+
+    elif args.dataset == "eedi":
+        def pass_typical_threshold(row):
+            return (row["meta_data"]["self_typical_confusion"] >= args.typical_cutoff and
+                    row["meta_data"]["self_typical_interactions"] >= args.typical_cutoff)
+
+        train_df = pd.read_csv(get_annotated_data_filename(args, "train"), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
+        train_df = train_df[train_df.apply(pass_typical_threshold, axis=1)]
+        valid_df = pd.read_csv(get_annotated_data_filename(args, "valid"), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
+        valid_df = valid_df[valid_df.apply(pass_typical_threshold, axis=1)]
+        test_df = pd.read_csv(get_annotated_data_filename(args, "test"), converters={col: literal_eval for col in ["dialogue", "meta_data", "annotation"]})
+        test_df = test_df[test_df.apply(pass_typical_threshold, axis=1)]
+        return (
+            train_df,
+            valid_df,
+            test_df
+        )        
     raise Exception(f"Loading not supported for {args.dataset}")
 
 def get_model_file_suffix(args, fold = None):

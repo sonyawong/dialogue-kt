@@ -139,7 +139,14 @@ def test(args):
 def compute_metrics(labels, preds):
     hard_preds = np.round(preds)
     acc = accuracy_score(labels, hard_preds)
-    auc = roc_auc_score(labels, preds)
+    
+    # 检查是否只有一个类别，如果是则跳过ROC AUC计算
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2:
+        auc = 0.0  # 或者返回None，取决于您的需求
+    else:
+        auc = roc_auc_score(labels, preds)
+    
     prec, rec, f1, _ = precision_recall_fscore_support(labels, hard_preds, average="binary")
     return acc * 100, auc * 100, prec * 100, rec * 100, f1 * 100
 
@@ -232,6 +239,8 @@ def train_lmkt(args, fold):
     KTCollator = LMKTCollatorPacked if args.pack_kcs else LMKTCollatorUnpacked
     get_loss = get_lmkt_loss_packed if args.pack_kcs else get_lmkt_loss_unpacked
     train_df, val_df, _ = load_annotated_data(args, fold)
+    print(f"train_df:{train_df.shape}")
+    print(f"val_df:{val_df.shape}")
     if args.debug:
         train_df = train_df[:2]
         val_df = val_df[:2]
@@ -240,6 +249,8 @@ def train_lmkt(args, fold):
     train_dataset = KTDataset(train_df, tokenizer, args)
     val_dataset = KTDataset(val_df, tokenizer, args)
     collator = KTCollator(tokenizer)
+    print(f"train_dataset:{len(train_dataset)}")
+    print(f"val_dataset:{len(val_dataset)}")
     train_dataloader = get_dataloader(train_dataset, collator, args.batch_size, True)
     val_dataloader = get_dataloader(val_dataset, collator, args.batch_size, False)
 
@@ -649,8 +660,25 @@ def train_test_bkt(args, fold):
     model.fit(data=train_df)
 
     # Test model
-    print("Train Acc./AUC:", model.evaluate(data=train_df, metric=["accuracy", "auc"]))
-    print("Test Acc./AUC:", model.evaluate(data=test_df, metric=["accuracy", "auc"]))
+    try:
+        train_metrics = model.evaluate(data=train_df, metric=["accuracy", "auc"])
+        print("Train Acc./AUC:", train_metrics)
+    except ValueError as e:
+        if "Only one class present" in str(e):
+            train_metrics = model.evaluate(data=train_df, metric=["accuracy"])
+            print("Train Acc./AUC:", train_metrics[0], "N/A (single class)")
+        else:
+            raise e
+    
+    try:
+        test_metrics = model.evaluate(data=test_df, metric=["accuracy", "auc"])
+        print("Test Acc./AUC:", test_metrics)
+    except ValueError as e:
+        if "Only one class present" in str(e):
+            test_metrics = model.evaluate(data=test_df, metric=["accuracy"])
+            print("Test Acc./AUC:", test_metrics[0], "N/A (single class)")
+        else:
+            raise e
     pred_df: pd.DataFrame = model.predict(data=test_df)
     pred_df = pred_df.sort_values(["order_id"])
     all_labels = []

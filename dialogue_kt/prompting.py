@@ -8,13 +8,13 @@ from dialogue_kt.data_loading import correct_to_str, standards_to_str
 def get_dialogue_text(dialogue: List[dict], turn_idx: int = None, include_labels: bool = False, tag_wrapper: bool = True):
     lines = []
     for turn in dialogue:
-        if turn["teacher"]:
+        if "teacher" in turn:
             lines.append(f"Teacher Turn {turn['turn']}: {turn['teacher']}")
         # When turn_idx is given, stop after teacher utterance for that turn
         # Student utterance not included since would leak the correctness label in KT objective
         if turn_idx is not None and turn_idx == turn["turn"]:
             break
-        if turn["student"]:
+        if "student" in turn:
             lines.append(f"Student Turn {turn['turn']}: {turn['student']}")
         if include_labels:
             lines.append(f"Student Turn {turn['turn']} Correct: {correct_to_str(turn['correct'])}")
@@ -39,6 +39,7 @@ def get_true_false_tokens(tokenizer: AutoTokenizer):
 
 COMTA_DIALOGUE_DESC = "the student is learning about math concepts."
 MATHDIAL_DIALOGUE_DESC = "the student is attempting to solve a math problem. You are also given this problem, its correct solution, and the incorrect solution the student initially gave."
+EEDI_DESC = "the student is working through a multiple-choice diagnostic math question. You are given the question and the corresponding correct answer."
 
 ANNO_BASE_SYSTEM_PROMPT = """You are an experienced math teacher and education expert. You are given a dialogue between a student and teacher where {desc} Your job is to list the math concepts/skills that can be used to classify the learning objectives at each turn in this dialogue. Please follow these instructions carefully when making your prediction:
 - Each math concept/skill should be short description of a single learning objective. They should be generic enough so that they can be applied across dialogues and educational settings.
@@ -82,6 +83,8 @@ def get_dataset_desc(args):
         return COMTA_DIALOGUE_DESC
     if args.dataset == "mathdial":
         return MATHDIAL_DIALOGUE_DESC
+    if args.dataset == "eedi":
+        return EEDI_DESC
     raise Exception(f"No dataset description defined for {args.dataset}")
 
 def anno_base_system_prompt(args):

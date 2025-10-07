@@ -12,6 +12,8 @@ from dialogue_kt.utils import device
 def apply_annotations(sample: dict, apply_na: bool = True):
     dialogue = sample["dialogue"]
     anno = sample["annotation"]
+    # print(f"anno:{anno}")
+    # print(f"dialogue:{dialogue}")
     if "error" in anno:
         return None
     # Handle dialogues beginning with turn 0 (student-initiated)
@@ -21,12 +23,15 @@ def apply_annotations(sample: dict, apply_na: bool = True):
     for dia_turn in dialogue:
         anno_turn = anno[f"turn {dia_turn['turn']}"]
         corr = anno_turn["correct"]
+        # print(f"corr:{corr}")
         kcs = anno_turn["kcs"]
+        # print(f"kcs:{kcs}")
         if apply_na:
             corr = None if not kcs else corr
             kcs = [] if corr is None else kcs
         dia_turn["correct"] = dia_turn["og_correct"] = corr
         dia_turn["kcs"] = kcs
+        
     # Use human annotation of correctness for final turn
     if dialogue[-1]["kcs"]: # Skip if no KCs for final turn since correct must be None
         if "expected_result" in sample["meta_data"]: # CoMTA
