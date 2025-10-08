@@ -49,7 +49,7 @@ def main():
         subparser.add_argument("--debug", action="store_true", help="Use subset of data for debugging")
 
     for subparser in [parser_train, parser_test, parser_visualize]:
-        subparser.add_argument("--model_type", type=str, choices=["lmkt", "random", "majority", "bkt"] + BASELINE_MODELS, default="lmkt", help="Model architecture to use")
+        subparser.add_argument("--model_type", type=str, choices=["lmkt", "random", "majority", "bkt", "irt-kt"] + BASELINE_MODELS, default="lmkt", help="Model architecture to use")
         subparser.add_argument("--model_name", type=str, help="Name of model to save for training or load for testing")
         subparser.add_argument("--base_model", type=str, default="meta-llama/Meta-Llama-3.1-8B-Instruct", help="HuggingFace base model for LLMKT")
         subparser.add_argument("--inc_first_label", action="store_true", help="Include first turn label in dialogues when testing")

@@ -16,17 +16,21 @@ from dialogue_kt.models.lm import get_model
 from dialogue_kt.models.dkt_multi_kc import DKTMultiKC
 from dialogue_kt.models.dkt_sem import DKTSem
 from dialogue_kt.models.simplekt import simpleKT
+from dialogue_kt.models.irt_kt import IRTKnowledgeTracing, IRTKnowledgeTracingLoss, create_irt_kt_model
 from dialogue_kt.data_loading import (load_annotated_data, get_kc_result_filename, get_qual_result_filename, get_default_fold, load_kc_dict,
                           correct_to_str, standards_to_str, get_model_file_suffix, COMTA_SUBJECTS)
 from dialogue_kt.kt_data_loading import (LMKTDatasetUnpacked, LMKTCollatorUnpacked, LMKTDatasetPacked, LMKTCollatorPacked,
                              DKTDataset, DKTCollator, get_dataloader, apply_annotations)
+# 使用现有的kt_data_loading而不是专门的irt_data_loading
+# from dialogue_kt.irt_data_loading import (IRTKTDataset, IRTKTCollator, create_irt_kt_dataloader, 
+#                                          prepare_irt_kt_data, get_kc_dict_from_dataset)
 from dialogue_kt.prompting import get_true_false_tokens
 from dialogue_kt.utils import device, get_checkpoint_path
 
 # ===== Common Functions =====
 
 def apply_defaults(args):
-    if args.model_type == "lmkt":
+    if args.model_type == "lmkt" or args.model_type == "irt-kt":
         defaults = {
             "epochs": 5,
             "lr": 2e-4,
@@ -122,7 +126,7 @@ def train(args):
 
     assert args.model_name or args.model_type == "bkt"
     apply_defaults(args)
-    fn = train_lmkt if args.model_type == "lmkt" else train_test_bkt if args.model_type == "bkt" else train_baseline
+    fn = train_lmkt if args.model_type == "lmkt" else train_test_bkt if args.model_type == "bkt" else train_irt_kt if args.model_type == "irt-kt" else train_baseline
     if args.crossval:
         return crossval(args, fn)
     else:
@@ -130,7 +134,7 @@ def train(args):
 
 def test(args):
     apply_defaults(args)
-    fn = test_lmkt if args.model_type == "lmkt" else test_baseline
+    fn = test_lmkt if args.model_type == "lmkt" else test_irt_kt if args.model_type == "irt-kt" else test_baseline
     if args.crossval:
         return crossval(args, fn)
     else:
@@ -244,8 +248,8 @@ def train_lmkt(args, fold):
     if args.debug:
         train_df = train_df[:2]
         val_df = val_df[:2]
-        print(train_df.iloc[0])
-        print(val_df.iloc[0])
+        # print(train_df.iloc[0])
+        # print(val_df.iloc[0])
     train_dataset = KTDataset(train_df, tokenizer, args)
     val_dataset = KTDataset(val_df, tokenizer, args)
     collator = KTCollator(tokenizer)
@@ -400,7 +404,7 @@ def test_lmkt(args, fold):
 
 # ===== Baselines =====
 
-BASELINE_MODELS = ["dkt-multi", "dkt-sem", "dkt", "akt", "dkvmn", "saint", "simplekt"]
+BASELINE_MODELS = ["dkt-multi", "dkt-sem", "dkt", "akt", "dkvmn", "saint", "simplekt", "irt-kt"]
 NON_FLAT_KC_ARCH = ["dkt-multi", "dkt-sem"]
 
 def select_flat_baseline_out_vectors(y: torch.Tensor, batch, shift_turn_end_idxs: bool):
@@ -700,3 +704,257 @@ def train_test_bkt(args, fold):
         all_preds.extend(preds[1:])
     metrics, _ = compute_all_metrics(0, all_labels, all_preds, None, None, args, fold)
     return [0, *metrics]
+
+
+# ===== IRT Knowledge Tracing =====
+
+def train_irt_kt(args, fold):
+    """训练IRT知识追踪模型"""
+    print("Training IRT Knowledge Tracing model...")
+    
+    # 加载KC字典
+    kc_dict = load_kc_dict(args)
+    num_kcs = len(kc_dict)
+    print(f"Number of knowledge components: {num_kcs}")
+    
+    # 创建模型
+    model_config = {
+        'base_model_name': args.base_model,
+        'num_kcs': num_kcs,
+        'hidden_dim': 4096,
+        'output_dim': num_kcs,  # M-dimensional knowledge state
+        'dropout': 0.1,
+        'freeze_llm': True
+    }
+    model = create_irt_kt_model(model_config).to(device)
+    
+    # 创建损失函数
+    criterion = IRTKnowledgeTracingLoss(alpha=1.0, beta=0.1)
+    
+    # 使用专门的IRT数据加载器
+    from dialogue_kt.irt_data_loading import prepare_irt_kt_data, IRTKTCollator, create_irt_kt_dataloader
+    
+    # 准备数据
+    train_dataset, val_dataset, _ = prepare_irt_kt_data(args, fold)
+    print(f"train_dataset: {len(train_dataset)}")
+    print(f"val_dataset: {len(val_dataset)}")
+    
+    if args.debug:
+        # 限制数据量用于调试
+        train_dataset.data = train_dataset.data[:2]
+        val_dataset.data = val_dataset.data[:2]
+        print(f"Debug mode - train_dataset: {len(train_dataset)}")
+        print(f"Debug mode - val_dataset: {len(val_dataset)}")
+    
+    # 创建数据加载器
+    collator = IRTKTCollator(train_dataset.tokenizer)
+    train_dataloader = create_irt_kt_dataloader(train_dataset, collator, args.batch_size, True)
+    val_dataloader = create_irt_kt_dataloader(val_dataset, collator, args.batch_size, False)
+    
+    # 优化器
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    
+    # 训练循环
+    best_val_loss = float('inf')
+    for epoch in range(args.epochs):
+        print(f"Epoch {epoch + 1}/{args.epochs}")
+        
+        # 训练阶段
+        model.train()
+        total_train_loss = 0
+        for batch_idx, batch in enumerate(tqdm(train_dataloader, desc="Training")):
+            optimizer.zero_grad()
+            
+            # 前向传播
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"]
+            )
+            
+            # 计算损失
+            loss = criterion(outputs, batch["labels"])
+            total_train_loss += loss.item()
+            
+            # 反向传播
+            loss.backward()
+            if args.gc:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.gc)
+            optimizer.step()
+        
+        # 验证阶段
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch in tqdm(val_dataloader, desc="Validating"):
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"]
+                )
+                loss = criterion(outputs, batch["labels"])
+                total_val_loss += loss.item()
+        
+        avg_train_loss = total_train_loss / len(train_dataloader)
+        avg_val_loss = total_val_loss / len(val_dataloader)
+        print(f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        # 保存最佳模型
+        if avg_val_loss < best_val_loss:
+            print("Best validation loss! Saving model...")
+            model_name = args.model_name + (f"_{fold}" if fold else "") + ".pt"
+            torch.save(model.state_dict(), get_checkpoint_path(model_name))
+            best_val_loss = avg_val_loss
+    
+    return test_irt_kt(args, fold)
+
+
+def test_irt_kt(args, fold):
+    """测试IRT知识追踪模型"""
+    print("Testing IRT Knowledge Tracing model...")
+    
+    # 加载KC字典
+    kc_dict = load_kc_dict(args)
+    num_kcs = len(kc_dict)
+    
+    # 加载数据
+    _, val_df, test_df = load_annotated_data(args, fold)
+    if args.testonval:
+        test_df = val_df
+    if args.debug:
+        test_df = test_df[:10]
+        # print(test_df.iloc[0])
+    
+    # 创建模型
+    model_config = {
+        'base_model_name': args.base_model,
+        'num_kcs': num_kcs,
+        'hidden_dim': 4096,
+        'output_dim': num_kcs,  # M-dimensional knowledge state
+        'dropout': 0.1,
+        'freeze_llm': True
+    }
+    model = create_irt_kt_model(model_config).to(device)
+    
+    # 加载训练好的模型
+    model_name = args.model_name + (f"_{fold}" if fold else "") + ".pt"
+    model.load_state_dict(torch.load(get_checkpoint_path(model_name), map_location=device))
+    model.eval()
+    
+    # 创建数据加载器
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    # 确保设置padding token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # 使用专门的IRT数据加载器
+    from dialogue_kt.irt_data_loading import prepare_irt_kt_data, IRTKTCollator, create_irt_kt_dataloader
+    
+    # 准备测试数据
+    _, _, test_dataset = prepare_irt_kt_data(args, fold)
+    if args.debug:
+        test_dataset.data = test_dataset.data[:10]
+        print(f"Debug mode - test_dataset: {len(test_dataset)}")
+    
+    # 创建数据加载器
+    collator = IRTKTCollator(test_dataset.tokenizer)
+    test_dataloader = create_irt_kt_dataloader(test_dataset, collator, args.batch_size, False)
+    
+    # 收集预测结果
+    all_labels = []
+    all_preds = []
+    all_kcs = []
+    dialogue_idx_to_sample_idxs = {}
+    sample_counter = 0
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(test_dataloader, desc="Testing")):
+            # 记录对话索引映射
+            for sample_idx, sample in enumerate(batch["meta_data"]):
+                dialogue_idx_to_sample_idxs.setdefault(sample["dialogue_idx"], []).append(sample_counter)
+                sample_counter += 1
+            
+            # 前向传播
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"]
+            )
+            
+            # 收集预测和标签
+            all_labels.extend(batch["labels"].tolist())
+            all_preds.extend(outputs['correctness_prediction'].squeeze().tolist())
+            all_kcs.extend([sample["kcs"] for sample in batch["annotation"]])
+    
+    # 计算最终轮次指标
+    final_turn_labels = []
+    final_turn_preds = []
+    for dialogue_idx, sample_idxs in dialogue_idx_to_sample_idxs.items():
+        if sample_idxs:  # 确保有样本
+            final_idx = sample_idxs[-1]  # 最后一个样本
+            final_turn_labels.append(all_labels[final_idx])
+            final_turn_preds.append(all_preds[final_idx])
+    
+    # 计算指标
+    loss = 0  # 测试时不需要计算损失
+    all_metrics, final_metrics = compute_all_metrics(
+        loss, all_labels, all_preds, final_turn_labels, final_turn_preds, args, fold
+    )
+    
+    # 保存结果
+    all_kc_probs = [[0.5] * len(kcs) for kcs in all_kcs]  # IRT模型不输出单个KC概率，使用占位符
+    save_irt_kt_results(args, fold, dialogue_idx_to_sample_idxs, all_preds, all_labels, all_kcs, test_df, all_kc_probs)
+    
+    return np.array([loss, *all_metrics, *final_metrics])
+
+
+def save_irt_kt_results(args, fold, dialogue_idx_to_sample_idxs, all_preds, all_labels, all_kcs, test_df, all_kc_probs):
+    """保存IRT模型的结果"""
+    # 保存KC结果（与LMKT格式一致）
+    kc_results = {
+        dialogue_idx: [
+            {
+                kc: kc_prob
+                for kc, kc_prob in zip(all_kcs[sample_idx], all_kc_probs[sample_idx])
+            }
+            for sample_idx in sample_idxs
+        ]
+        for dialogue_idx, sample_idxs in dialogue_idx_to_sample_idxs.items()
+    }
+    with open(get_kc_result_filename(args, fold), "w") as out_file:
+        json.dump(kc_results, out_file, indent=2)
+    
+    # 保存定性分析结果（与LMKT格式一致）
+    qual_data = []
+    for dia_idx, sample in test_df.iterrows():
+        dialogue = apply_annotations(sample)
+        if dia_idx not in dialogue_idx_to_sample_idxs:
+            continue
+        dia_preds = [all_preds[idx] for idx in dialogue_idx_to_sample_idxs[dia_idx]]
+        dia_labels = [all_labels[idx] for idx in dialogue_idx_to_sample_idxs[dia_idx]]
+        dia_acc = f"{(np.round(dia_preds) == dia_labels).mean():.4f}"
+        first_turn = not args.inc_first_label
+        label_counter = 0
+        for turn in dialogue:
+            if turn["correct"] is not None and not first_turn:
+                label_idx = dialogue_idx_to_sample_idxs[dia_idx][label_counter]
+                prob = f"{all_preds[label_idx]:.4f}"
+                kc_probs = ", ".join([f"{kc_prob:.4f}" for kc_prob in all_kc_probs[label_idx]])
+                label_counter += 1
+            else:
+                prob = "--"
+                kc_probs = "--"
+            if turn["correct"] is not None and first_turn:
+                first_turn = False
+            qual_data.append({
+                "Dialogue ID": dia_idx,
+                "Turn": turn.get("turn", "--"),
+                "Teacher": turn.get("teacher", "--") or "--",
+                "Student": turn.get("student", "--") or "--",
+                "Correct": correct_to_str(turn.get("correct")),
+                "Prob": prob,
+                "KC Probs": kc_probs,
+                "Dialogue Acc.": dia_acc,
+                "KCs": standards_to_str(turn.get("kcs", []), "\n"),
+                "Notes": ""
+            })
+        qual_data.append({key: "" for key in qual_data[0]})
+    pd.DataFrame(qual_data).to_csv(get_qual_result_filename(args, fold), index=False)

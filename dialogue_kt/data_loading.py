@@ -1,6 +1,7 @@
 from typing import List, Union
 import json
 import re
+import os
 from ast import literal_eval
 import pandas as pd
 
@@ -133,8 +134,68 @@ def get_annotated_data_filename(args, split: str = ""):
 def get_kc_dict_filename(args):
     return f"data/annotated/kc_dict_{args.dataset}_{args.tag_src}.json"
 
+def generate_eedi_kc_dict(args):
+    """
+    为EEDI数据集生成知识组件字典
+    从实际的EEDI数据中提取所有知识组件
+    """
+    print("Extracting knowledge components from EEDI dataset...")
+    # 尝试加载EEDI数据
+    if args.dataset == "eedi":
+        # 尝试不同的可能路径
+        possible_paths = [
+            f"data/annotated/eedi_train_{args.tag_src}.csv",
+            f"data/annotated/eedi_valid_{args.tag_src}.csv",
+            f"data/annotated/eedi_test_{args.tag_src}.csv",
+        ]
+        
+        eedi_data = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"Found EEDI data at: {path}")
+                eedi_data = pd.read_csv(path, converters={
+                    col: literal_eval for col in ["dialogue", "meta_data", "annotation"]
+                })
+                break
+        
+        
+        # 从数据中提取知识组件
+        kc_set = set()
+        processed_count = 0
+        
+        for idx, sample in eedi_data.iterrows():
+            # 提取所有知识组件
+            for turn in sample["annotation"]:
+                kc_set.update(sample["annotation"][turn]["kcs"])
+                processed_count += 1
+        
+        print(f"Processed {processed_count} samples")
+        print(f"Found {len(kc_set)} unique knowledge components")
+        
+        # 创建知识组件字典
+        kc_list = sorted(list(kc_set))
+        kc_dict = {kc: idx for idx, kc in enumerate(kc_list)}
+        
+        print(f"Generated KC dictionary with {len(kc_dict)} knowledge components")
+        
+        return kc_dict
+            
+
+
 def load_kc_dict(args):
-    with open(get_kc_dict_filename(args)) as file:
+    kc_dict_path = get_kc_dict_filename(args)
+    
+    # 如果文件不存在且是EEDI数据集，则生成KC字典
+    if not os.path.exists(kc_dict_path) and args.dataset == "eedi":
+        print(f"KC dictionary not found at {kc_dict_path}, generating for EEDI dataset...")
+        kc_dict = generate_eedi_kc_dict(args)
+        # 确保目录存在
+        os.makedirs(os.path.dirname(kc_dict_path), exist_ok=True)
+        with open(kc_dict_path, 'w') as f:
+            json.dump(kc_dict, f, indent=2)
+        print(f"Generated KC dictionary with {len(kc_dict)} knowledge components")
+    
+    with open(kc_dict_path) as file:
         return json.load(file)
 
 def get_default_fold(args):

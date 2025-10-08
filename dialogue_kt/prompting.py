@@ -7,14 +7,35 @@ from dialogue_kt.data_loading import correct_to_str, standards_to_str
 
 def get_dialogue_text(dialogue: List[dict], turn_idx: int = None, include_labels: bool = False, tag_wrapper: bool = True):
     lines = []
+    
+    # 如果turn_idx是student turn，我们需要找到对应的teacher turn
+    target_turn_idx = turn_idx
+    if turn_idx is not None:
+        target_turn = next((t for t in dialogue if t["turn"] == turn_idx), None)
+        if target_turn and (target_turn.get("teacher") == "N/A" or not target_turn.get("teacher")) and target_turn.get("student") and target_turn.get("student") != "N/A":
+            # 这是一个student turn，我们需要找到对应的teacher turn
+            # 通常teacher turn在student turn之前
+            for i in range(turn_idx - 1, 0, -1):
+                teacher_turn = next((t for t in dialogue if t["turn"] == i), None)
+                if teacher_turn and teacher_turn.get("teacher") and teacher_turn.get("teacher") != "N/A":
+                    target_turn_idx = i
+                    break
+    
     for turn in dialogue:
-        if "teacher" in turn:
-            lines.append(f"Teacher Turn {turn['turn']}: {turn['teacher']}")
-        # When turn_idx is given, stop after teacher utterance for that turn
-        # Student utterance not included since would leak the correctness label in KT objective
+        if "teacher" in turn and turn["teacher"] and turn["teacher"] != "N/A":
+            # 如果是目标轮次，添加特殊标记
+            if target_turn_idx is not None and target_turn_idx == turn["turn"]:
+                lines.append(f"[CURRENT TEACHER TURN] Teacher Turn {turn['turn']}: {turn['teacher']} [END CURRENT TURN]")
+            else:
+                lines.append(f"Teacher Turn {turn['turn']}: {turn['teacher']}")
+        
+        # When turn_idx is given, stop after the target turn
+        # For student turns, we need to include the corresponding teacher turn
         if turn_idx is not None and turn_idx == turn["turn"]:
+            # If this is a student turn, we already found and marked the teacher turn above
+            # So we can break here
             break
-        if "student" in turn:
+        if "student" in turn and turn["student"] and turn["student"] != "N/A":
             lines.append(f"Student Turn {turn['turn']}: {turn['student']}")
         if include_labels:
             lines.append(f"Student Turn {turn['turn']} Correct: {correct_to_str(turn['correct'])}")
@@ -28,6 +49,15 @@ def get_mathdial_context(sample: dict):
     return (f"[BEGIN PROBLEM]\n{sample['meta_data']['question'].strip()}\n[END PROBLEM]\n\n"
             f"[BEGIN CORRECT SOLUTION]\n{sample['meta_data']['correct_solution'].strip()}\n[END CORRECT SOLUTION]\n\n"
             f"[BEGIN INCORRECT STUDENT SOLUTION]\n{sample['meta_data']['incorrect_solution'].strip()}\n[END INCORRECT STUDENT SOLUTION]")
+
+def get_eedi_context(sample: dict):
+    """为EEDI数据集获取问题上下文"""
+    context = f"[BEGIN QUESTION]\n{sample['meta_data']['question'].strip()}\n[END QUESTION]\n\n"
+    
+    # 添加正确答案信息（如果存在）
+    if 'correct_answer' in sample['meta_data']:
+        context += f"[BEGIN CORRECT ANSWER]\n{sample['meta_data']['correct_answer'].strip()}\n[END CORRECT ANSWER]\n\n"
+    return context
 
 def get_true_false_tokens(tokenizer: AutoTokenizer):
     true = tokenizer("True").input_ids[-1]
@@ -112,6 +142,8 @@ def anno_atc_user_prompt(sample: dict, level: str, options: List[str], args):
     prompt = ""
     if args.dataset == "mathdial":
         prompt += get_mathdial_context(sample) + "\n\n"
+    elif args.dataset == "eedi":
+        prompt += get_eedi_context(sample) + "\n\n"
     prompt += get_dialogue_text(sample["dialogue"])
     desc = "DOMAINS" if level == "domain" else "MATH CONCEPTS/SKILLS" if level == "cluster" else "STANDARDS"
     prompt += f"\n\n[BEGIN {desc}]\n- " + "\n- ".join(options) + f"\n[END {desc}]"
@@ -138,6 +170,8 @@ def kt_user_prompt(sample: dict, dialogue_anno: List[dict], turn_idx: int, kc: O
     prompt = ""
     if args.dataset == "mathdial":
         prompt += get_mathdial_context(sample) + "\n\n"
+    elif args.dataset == "eedi":
+        prompt += get_eedi_context(sample) + "\n\n"
     prompt += get_dialogue_text(dialogue_anno, turn_idx=turn_idx, include_labels=args.prompt_inc_labels)
     prompt += f"\n\nKnowledge Component:"
     if kc:
